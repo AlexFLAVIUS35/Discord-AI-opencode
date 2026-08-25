@@ -9,6 +9,9 @@ export const reset: Command = {
     .setDescription('Reset the AI memory for this channel or thread') as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction) {
+    // Acknowledge immediately so the interaction cannot expire while cleanup runs.
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     const conversationId = interaction.channelId;
     const currentSession = sessionManager.getSessionForThread(conversationId);
 
@@ -26,9 +29,6 @@ export const reset: Command = {
     dataStore.clearQueue(conversationId);
     dataStore.updateQueueSettings(conversationId, { freshContext: true });
 
-    await interaction.reply({
-      content: '✅ memory reset',
-      flags: MessageFlags.Ephemeral,
-    });
+    await interaction.editReply('✅ memory reset');
   },
 };
