@@ -8,6 +8,7 @@ import { storageCommand } from './storage.js';
 import { activation, deactivate } from './activation.js';
 import { personality } from './personality.js';
 import { interrupt } from './interrupt.js';
+import { reset } from './reset.js';
 
 export interface Command {
   data: SlashCommandBuilder;
@@ -36,6 +37,7 @@ session.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstalla
 storageCommand.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
 personality.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
 interrupt.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+reset.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
 
 // Activation controls are strictly guild-install commands. User-installed apps
 // always behave as an active conversation and never expose these commands.
@@ -52,3 +54,4 @@ commands.set(session.data.name, session);
 commands.set(storageCommand.data.name, storageCommand);
 commands.set(personality.data.name, personality);
 commands.set(interrupt.data.name, interrupt);
+commands.set(reset.data.name, reset);
