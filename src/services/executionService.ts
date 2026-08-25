@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Message, TextBasedChannel, EmbedBuilder } from 'discord.js';
+import { TextBasedChannel, EmbedBuilder } from 'discord.js';
 import * as dataStore from './dataStore.js';
 import * as sessionManager from './sessionManager.js';
 import * as serveManager from './serveManager.js';
@@ -8,15 +8,13 @@ import { SSEClient } from './sseClient.js';
 import { formatOutputForMobile } from '../utils/messageFormatter.js';
 import { processNextInQueue } from './queueManager.js';
 
-const RUNNING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
 export async function runPrompt(channel: TextBasedChannel, threadId: string, prompt: string, parentChannelId: string, userId?: string): Promise<void> {
   const storageEnabled = storage.isEnabled(threadId);
   const projectPath = storage.getWorkspace(threadId);
   const configuredProjectPath = dataStore.getChannelProjectPath(parentChannelId);
   let worktreeMapping = storageEnabled ? dataStore.getWorktreeMapping(threadId) : undefined;
 
-  if (storageEnabled && !configuredProjectPath) {
+  if (storageEnabled && storage.isEnabled(threadId) && !configuredProjectPath) {
     // /storage activate is the new simple mode; the configured storage path is enough.
   }
 
@@ -30,26 +28,18 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
         dataStore.setWorktreeMapping(newMapping);
         worktreeMapping = newMapping;
         const embed = new EmbedBuilder().setTitle(`🌳 Auto-Worktree: ${branchName}`).setDescription('Automatically created for this session').addFields({ name: 'Branch', value: branchName, inline: true }, { name: 'Path', value: worktreePath, inline: true }).setColor(0x2ecc71);
-        const worktreeButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`delete_${threadId}`).setLabel('Delete').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId(`pr_${threadId}`).setLabel('Create PR').setStyle(ButtonStyle.Primary));
-        await (channel as any).send({ embeds: [embed], components: [worktreeButtons] });
+        await (channel as any).send({ embeds: [embed] });
       } catch (error) { console.error('Auto-worktree creation failed:', error); }
     }
   }
 
   const effectivePath = storageEnabled ? (worktreeMapping?.worktreePath ?? projectPath) : projectPath;
   const preferredModel = dataStore.getChannelModel(parentChannelId);
-  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`interrupt_${threadId}`).setLabel('⏸️ Interrupt').setStyle(ButtonStyle.Secondary));
-  let streamMessage: Message;
-  try { streamMessage = await (channel as any).send({ content: '⠋ **Running...**', components: [buttons] }); } catch { return; }
 
-  let frameIndex = 1;
-  const animationTimer = setInterval(() => {
-    void streamMessage.edit({ content: `${RUNNING_FRAMES[frameIndex++ % RUNNING_FRAMES.length]} **Running...**`, components: [buttons] }).catch(() => {});
-  }, 700);
-  const stopAnimation = () => clearInterval(animationTimer);
+  // Discord's native typing indicator: "Leeha AI is typing..."
+  try { await (channel as any).sendTyping(); } catch { }
 
   let port: number; let sessionId: string; let accumulatedText = ''; let promptSent = false; let hasSessionError = false;
-  const updateStreamMessage = async (content: string, components: ActionRowBuilder<ButtonBuilder>[] = []): Promise<boolean> => { stopAnimation(); try { await streamMessage.edit({ content, components }); return true; } catch (error) { console.error('Failed to edit stream message:', error instanceof Error ? error.message : error); return false; } };
   const safeSend = async (content: string): Promise<boolean> => { try { await (channel as any).send({ content }); return true; } catch (error) { console.error('Failed to send message:', error instanceof Error ? error.message : error); return false; } };
 
   try {
@@ -64,25 +54,25 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
       if (idleSessionId !== sessionId || !promptSent) return;
       (async () => {
         try {
-          if (hasSessionError) { stopAnimation(); sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
-          if (!accumulatedText.trim()) { const edited = await updateStreamMessage('⚠️ No output received — the model may have encountered an issue.'); if (!edited) await safeSend('⚠️ No output received — the model may have encountered an issue.'); }
+          if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
+          if (!accumulatedText.trim()) { await safeSend('⚠️ No output received — the model may have encountered an issue.'); }
           else {
-            const result = formatOutputForMobile(accumulatedText); const editSuccess = await updateStreamMessage(result.chunks[0]); const startIndex = editSuccess ? 1 : 0;
-            for (let i = startIndex; i < result.chunks.length; i++) await safeSend(result.chunks[i]);
+            const result = formatOutputForMobile(accumulatedText);
+            for (const chunk of result.chunks) await safeSend(chunk);
           }
           sseClient.disconnect(); sessionManager.clearSseClient(threadId); await processNextInQueue(channel, threadId, parentChannelId);
-        } catch (error) { stopAnimation(); console.error('Error in onSessionIdle:', error); await safeSend('❌ An unexpected error occurred while processing the response.'); }
+        } catch (error) { console.error('Error in onSessionIdle:', error); await safeSend('❌ An unexpected error occurred while processing the response.'); }
       })();
     });
     sseClient.onSessionError((errorSessionId, errorInfo) => {
       if (errorSessionId !== sessionId || !promptSent) return; hasSessionError = true;
       (async () => {
-        const errorMsg = errorInfo.data?.message || errorInfo.name || 'Unknown error'; const edited = await updateStreamMessage(`❌ **Error**: ${errorMsg}`); if (!edited) await safeSend(`❌ **Error**: ${errorMsg}`);
+        const errorMsg = errorInfo.data?.message || errorInfo.name || 'Unknown error'; await safeSend(`❌ **Error**: ${errorMsg}`);
         sseClient.disconnect(); sessionManager.clearSseClient(threadId); const settings = dataStore.getQueueSettings(threadId);
         if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); }
       })().catch(console.error);
     });
-    sseClient.onError((error) => { (async () => { const edited = await updateStreamMessage(`❌ Connection error: ${error.message}`); if (!edited) await safeSend(`❌ Connection error: ${error.message}`); sseClient.disconnect(); sessionManager.clearSseClient(threadId); const settings = dataStore.getQueueSettings(threadId); if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); } })().catch(console.error); });
+    sseClient.onError((error) => { (async () => { await safeSend(`❌ Connection error: ${error.message}`); sseClient.disconnect(); sessionManager.clearSseClient(threadId); const settings = dataStore.getQueueSettings(threadId); if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); } })().catch(console.error); });
 
     const personality = userId ? dataStore.getUserPersonality(userId) : undefined;
     const effectivePrompt = personality
@@ -91,7 +81,7 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
     promptSent = true;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error'; const edited = await updateStreamMessage(`❌ OpenCode execution failed: ${errorMessage}`); if (!edited) await safeSend(`❌ OpenCode execution failed: ${errorMessage}`);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'; await safeSend(`❌ OpenCode execution failed: ${errorMessage}`);
     const client = sessionManager.getSseClient(threadId); if (client) { client.disconnect(); sessionManager.clearSseClient(threadId); }
     const settings = dataStore.getQueueSettings(threadId); if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); }
   }
