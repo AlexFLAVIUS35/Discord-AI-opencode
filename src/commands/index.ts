@@ -1,4 +1,4 @@
-import { Collection, SlashCommandBuilder, AutocompleteInteraction } from 'discord.js';
+import { Collection, SlashCommandBuilder, AutocompleteInteraction, InteractionContextType } from 'discord.js';
 import { opencode } from './opencode.js';
 import { model } from './model.js';
 import { allow } from './allow.js';
@@ -17,7 +17,28 @@ export interface Command {
 
 export const commands = new Collection<string, Command>();
 
-// Simple Orange-style interface: activate a channel/thread, then just chat normally.
+// Commands available to user-installed applications as well as guild installs.
+// activate/deactivate remain guild-only because user-installed apps always behave
+// as an active conversation and do not need channel activation state.
+const userAppContexts = [
+  InteractionContextType.Guild,
+  InteractionContextType.BotDM,
+  InteractionContextType.PrivateChannel,
+] as const;
+
+opencode.data.setContexts(...userAppContexts);
+model.data.setContexts(...userAppContexts);
+allow.data.setContexts(...userAppContexts);
+voice.data.setContexts(...userAppContexts);
+session.data.setContexts(...userAppContexts);
+storageCommand.data.setContexts(...userAppContexts);
+personality.data.setContexts(...userAppContexts);
+interrupt.data.setContexts(...userAppContexts);
+
+// Keep activation controls restricted to guild-installed use.
+activation.data.setContexts(InteractionContextType.Guild);
+deactivate.data.setContexts(InteractionContextType.Guild);
+
 commands.set(activation.data.name, activation);
 commands.set(deactivate.data.name, deactivate);
 commands.set(opencode.data.name, opencode);
