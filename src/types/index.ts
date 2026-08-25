@@ -13,9 +13,16 @@ export interface ChannelBinding {
   model?: string;
 }
 
+export interface UserPersonality {
+  userId: string;
+  personality: string;
+  updatedAt: number;
+}
+
 export interface DataStore {
   projects: ProjectConfig[];
   bindings: ChannelBinding[];
+  userPersonalities?: UserPersonality[];
   threadSessions?: ThreadSession[];
   worktreeMappings?: WorktreeMapping[];
   passthroughThreads?: PassthroughThread[];
@@ -36,7 +43,6 @@ export interface QueueSettings {
   continueOnFailure: boolean;
   freshContext: boolean;
 }
-
 
 export interface TextPart {
   id: string;
@@ -80,7 +86,7 @@ export interface WorktreeMapping {
 export interface PassthroughThread {
   threadId: string;
   enabled: boolean;
-  enabledBy: string;  // userId
+  enabledBy: string;
   enabledAt: number;
 }
 
