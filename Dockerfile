@@ -38,4 +38,4 @@ USER nodejs
 
 # Use tini as init process
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/src/cli.js", "start"]
