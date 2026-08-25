@@ -1,4 +1,4 @@
-import { REST, Routes } from 'discord.js';
+import { REST, Routes, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { getBotConfig } from '../services/configStore.js';
 import { commands } from '../commands/index.js';
 import { initializeProxySupport } from '../services/proxySupport.js';
@@ -11,7 +11,19 @@ export async function deployCommands(): Promise<void> {
     throw new Error('Bot configuration not found. Run setup first.');
   }
 
-  const commandsData = Array.from(commands.values()).map(c => c.data.toJSON());
+  const commandsData = Array.from(commands.values()).map(c => {
+    const data = c.data.toJSON() as any;
+
+    // Keep activation controls strictly guild-install commands at the raw REST
+    // payload level too. This prevents stale/incorrect integration metadata from
+    // making /activate or /deactivate appear in User Install command menus.
+    if (data.name === 'activate' || data.name === 'deactivate') {
+      data.integration_types = [ApplicationIntegrationType.GuildInstall];
+      data.contexts = [InteractionContextType.Guild];
+    }
+
+    return data;
+  });
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
 
   initializeProxySupport();
