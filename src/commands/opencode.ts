@@ -24,11 +24,12 @@ export const opencode: Command = {
       return;
     }
 
-    // A user-installed app has no guild installation owner for this interaction.
-    // In that mode /prompt behaves like active mode: no Discord thread is created.
-    // Guild-installed /prompt keeps the original thread-based behavior unchanged.
+    // Discord exposes authorizingIntegrationOwners as a map keyed by installation
+    // type, not userId/guildId properties. A user-install interaction has a user
+    // installation owner and no guild installation owner.
     const owners = interaction.authorizingIntegrationOwners;
-    const isUserInstallOnly = Boolean(owners?.userId && !owners?.guildId);
+    const ownerKeys = Object.keys(owners ?? {});
+    const isUserInstallOnly = ownerKeys.includes('0') && !ownerKeys.includes('1');
 
     if (isUserInstallOnly) {
       const channel = interaction.channel;
