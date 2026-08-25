@@ -22,7 +22,7 @@ export async function processNextInQueue(channel: TextBasedChannel, threadId: st
     }
   }
   if (!prompt) return;
-  if ('send' in channel) await (channel as any).send('🔄 **Queue**: Starting next task...');
+  // Queue transitions are intentionally silent. The next task starts naturally.
   await runPrompt(channel, threadId, prompt, parentChannelId, next.userId);
 }
 
