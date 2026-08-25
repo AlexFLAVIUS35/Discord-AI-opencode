@@ -1,4 +1,4 @@
-import { Collection, SlashCommandBuilder, AutocompleteInteraction, InteractionContextType } from 'discord.js';
+import { Collection, SlashCommandBuilder, AutocompleteInteraction, InteractionContextType, ApplicationIntegrationType } from 'discord.js';
 import { opencode } from './opencode.js';
 import { model } from './model.js';
 import { allow } from './allow.js';
@@ -17,27 +17,30 @@ export interface Command {
 
 export const commands = new Collection<string, Command>();
 
-// Commands available to user-installed applications as well as guild installs.
-// activate/deactivate remain guild-only because user-installed apps always behave
-// as an active conversation and do not need channel activation state.
+// These commands are available to both guild-installed and user-installed apps.
 const userAppContexts = [
   InteractionContextType.Guild,
   InteractionContextType.BotDM,
   InteractionContextType.PrivateChannel,
 ] as const;
+const bothInstallations = [
+  ApplicationIntegrationType.GuildInstall,
+  ApplicationIntegrationType.UserInstall,
+] as const;
 
-opencode.data.setContexts(...userAppContexts);
-model.data.setContexts(...userAppContexts);
-allow.data.setContexts(...userAppContexts);
-voice.data.setContexts(...userAppContexts);
-session.data.setContexts(...userAppContexts);
-storageCommand.data.setContexts(...userAppContexts);
-personality.data.setContexts(...userAppContexts);
-interrupt.data.setContexts(...userAppContexts);
+opencode.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+model.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+allow.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+voice.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+session.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+storageCommand.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+personality.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
+interrupt.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
 
-// Keep activation controls restricted to guild-installed use.
-activation.data.setContexts(InteractionContextType.Guild);
-deactivate.data.setContexts(InteractionContextType.Guild);
+// Activation controls are strictly guild-install commands. User-installed apps
+// always behave as an active conversation and never expose these commands.
+activation.data.setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall);
+deactivate.data.setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall);
 
 commands.set(activation.data.name, activation);
 commands.set(deactivate.data.name, deactivate);
