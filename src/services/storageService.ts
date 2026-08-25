@@ -60,11 +60,11 @@ export function getStatus(threadId: string): StorageState {
   return load()[threadId] ?? { enabled: false };
 }
 
-export function getChatWorkspace(threadId: string): string {
-  const safeId = threadId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = join(CHAT_ROOT, safeId);
-  if (!existsSync(path)) mkdirSync(path, { recursive: true });
-  return path;
+export function getChatWorkspace(_threadId: string): string {
+  // All no-storage chats share one isolated, permission-denied workspace.
+  // This lets serveManager reuse the same OpenCode server across channels/threads.
+  if (!existsSync(CHAT_ROOT)) mkdirSync(CHAT_ROOT, { recursive: true });
+  return CHAT_ROOT;
 }
 
 export function getWorkspace(threadId: string): string {
