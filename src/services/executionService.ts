@@ -1,4 +1,4 @@
-import { TextBasedChannel, EmbedBuilder, Message } from 'discord.js';
+import { TextBasedChannel, EmbedBuilder, Message, ChatInputCommandInteraction } from 'discord.js';
 import * as dataStore from './dataStore.js';
 import * as sessionManager from './sessionManager.js';
 import * as serveManager from './serveManager.js';
@@ -20,8 +20,6 @@ async function reactToLatestUserMessage(channel: TextBasedChannel, emoji: string
 }
 
 async function processAiReactions(channel: TextBasedChannel, text: string): Promise<string> {
-  // [react:🥹✌️] means two reactions: 🥹 and ✌️. Intl.Segmenter keeps
-  // multi-codepoint emojis such as ❤️ and 👍🏽 intact while splitting adjacent emojis.
   const reactions: string[] = [];
   const cleaned = text.replace(/\[react:([^\]\r\n]{1,64})\]/gu, (_match, emojiText: string) => {
     const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -31,21 +29,15 @@ async function processAiReactions(channel: TextBasedChannel, text: string): Prom
     }
     return '';
   });
-  for (const emoji of reactions) {
-    await reactToLatestUserMessage(channel, emoji);
-  }
+  for (const emoji of reactions) await reactToLatestUserMessage(channel, emoji);
   return cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-export async function runPrompt(channel: TextBasedChannel, threadId: string, prompt: string, parentChannelId: string, userId?: string): Promise<void> {
+export async function runPrompt(channel: TextBasedChannel | null, threadId: string, prompt: string, parentChannelId: string, userId?: string, interaction?: ChatInputCommandInteraction): Promise<void> {
   const storageEnabled = storage.isEnabled(threadId);
   const projectPath = storage.getWorkspace(threadId);
   const configuredProjectPath = dataStore.getChannelProjectPath(parentChannelId);
   let worktreeMapping = storageEnabled ? dataStore.getWorktreeMapping(threadId) : undefined;
-
-  if (storageEnabled && storage.isEnabled(threadId) && !configuredProjectPath) {
-    // /storage activate is the new simple mode; the configured storage path is enough.
-  }
 
   if (storageEnabled && !worktreeMapping) {
     const projectAlias = dataStore.getChannelBinding(parentChannelId);
@@ -56,20 +48,41 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
         const newMapping = { threadId, branchName, worktreePath, projectPath: configuredProjectPath, description: prompt.slice(0, 50) + (prompt.length > 50 ? '...' : ''), createdAt: Date.now() };
         dataStore.setWorktreeMapping(newMapping);
         worktreeMapping = newMapping;
-        const embed = new EmbedBuilder().setTitle(`🌳 Auto-Worktree: ${branchName}`).setDescription('Automatically created for this session').addFields({ name: 'Branch', value: branchName, inline: true }, { name: 'Path', value: worktreePath, inline: true }).setColor(0x2ecc71);
-        await (channel as any).send({ embeds: [embed] });
+        if (channel) {
+          const embed = new EmbedBuilder().setTitle(`🌳 Auto-Worktree: ${branchName}`).setDescription('Automatically created for this session').addFields({ name: 'Branch', value: branchName, inline: true }, { name: 'Path', value: worktreePath, inline: true }).setColor(0x2ecc71);
+          await (channel as any).send({ embeds: [embed] });
+        }
       } catch (error) { console.error('Auto-worktree creation failed:', error); }
     }
   }
 
   const effectivePath = storageEnabled ? (worktreeMapping?.worktreePath ?? projectPath) : projectPath;
   const preferredModel = dataStore.getChannelModel(parentChannelId);
-
-  try { await (channel as any).sendTyping(); } catch { }
+  try { if (channel) await (channel as any).sendTyping(); } catch { }
 
   let port: number; let sessionId: string; let accumulatedText = ''; let promptSent = false; let hasSessionError = false; let responseHandled = false;
-  const safeSend = async (content: string): Promise<boolean> => { try { await (channel as any).send({ content }); return true; } catch (error) { console.error('Failed to send message:', error instanceof Error ? error.message : error); return false; } };
+
+  const sendOutput = async (content: string): Promise<boolean> => {
+    try {
+      if (interaction) {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content });
+        } else {
+          await interaction.followUp({ content });
+        }
+        return true;
+      }
+      if (!channel) return false;
+      await (channel as any).send({ content });
+      return true;
+    } catch (error) {
+      console.error('Failed to send AI response:', error instanceof Error ? error.message : error);
+      return false;
+    }
+  };
+
   const continueQueue = async () => {
+    if (!channel) return;
     try { await processNextInQueue(channel, threadId, parentChannelId); }
     catch (error) { console.error('Failed to continue queue:', error); }
   };
@@ -88,12 +101,12 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
       (async () => {
         try {
           if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
-          if (!accumulatedText.trim()) { await safeSend('⚠️ No output received — the model may have encountered an issue.'); }
+          if (!accumulatedText.trim()) await sendOutput('⚠️ No output received — the model may have encountered an issue.');
           else {
-            const reactedText = await processAiReactions(channel, accumulatedText);
+            const reactedText = channel ? await processAiReactions(channel, accumulatedText) : accumulatedText.replace(/\[react:([^\]\r\n]{1,64})\]/gu, '').trim();
             if (reactedText) {
               const result = formatOutputForMobile(reactedText);
-              for (const chunk of result.chunks) await safeSend(chunk);
+              for (const chunk of result.chunks) await sendOutput(chunk);
             }
           }
           sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
