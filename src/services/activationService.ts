@@ -22,8 +22,9 @@ function save(data: ActivationMap): void {
   writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 
-export function isActive(channelOrThreadId: string): boolean {
-  return load()[channelOrThreadId] === true;
+export function isActive(channelOrThreadId: string, defaultValue = false): boolean {
+  const data = load();
+  return data[channelOrThreadId] ?? defaultValue;
 }
 
 export function activate(channelOrThreadId: string): void {
@@ -34,6 +35,8 @@ export function activate(channelOrThreadId: string): void {
 
 export function deactivate(channelOrThreadId: string): void {
   const data = load();
-  delete data[channelOrThreadId];
+  // Keep an explicit false value so DM conversations can be default-active
+  // while still allowing /deactivate to turn them off.
+  data[channelOrThreadId] = false;
   save(data);
 }
