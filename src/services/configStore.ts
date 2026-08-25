@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -101,6 +101,16 @@ export function setBotEnvironment(bot: BotConfig): void {
   chmodSync(ENV_FILE, 0o600);
 }
 
+export function removeBotConfig(): void {
+  const config = loadConfig();
+  delete config.bot;
+  saveConfig(config);
+}
+
+export function removeBotEnvironment(): void {
+  if (existsSync(ENV_FILE)) unlinkSync(ENV_FILE);
+}
+
 export function getPortConfig(): PortConfig | undefined {
   return loadConfig().ports;
 }
@@ -116,9 +126,8 @@ export function hasBotConfig(): boolean {
 }
 
 export function clearBotConfig(): void {
-  const config = loadConfig();
-  delete config.bot;
-  saveConfig(config);
+  removeBotConfig();
+  removeBotEnvironment();
 }
 
 export function getAllowedUserIds(): string[] {
