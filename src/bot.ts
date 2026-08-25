@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Events } from 'discord.js';
+import { Client, GatewayIntentBits, Events, Partials } from 'discord.js';
 import pc from 'picocolors';
 import { getBotConfig } from './services/configStore.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
@@ -20,7 +20,11 @@ export async function startBot(): Promise<void> {
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.MessageContent,
-    ]
+    ],
+    // DM channels are not guaranteed to be cached. Without the Channel
+    // partial, discord.js can fail to construct the DM message/channel object
+    // needed by MessageCreate, which breaks automatic DM active mode.
+    partials: [Partials.Channel],
   });
   
   client.once(Events.ClientReady, (c) => {
