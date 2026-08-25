@@ -36,11 +36,14 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
   const effectivePath = storageEnabled ? (worktreeMapping?.worktreePath ?? projectPath) : projectPath;
   const preferredModel = dataStore.getChannelModel(parentChannelId);
 
-  // Discord's native typing indicator: "Leeha AI is typing..."
   try { await (channel as any).sendTyping(); } catch { }
 
-  let port: number; let sessionId: string; let accumulatedText = ''; let promptSent = false; let hasSessionError = false;
+  let port: number; let sessionId: string; let accumulatedText = ''; let promptSent = false; let hasSessionError = false; let responseHandled = false;
   const safeSend = async (content: string): Promise<boolean> => { try { await (channel as any).send({ content }); return true; } catch (error) { console.error('Failed to send message:', error instanceof Error ? error.message : error); return false; } };
+  const continueQueue = async () => {
+    try { await processNextInQueue(channel, threadId, parentChannelId); }
+    catch (error) { console.error('Failed to continue queue:', error); }
+  };
 
   try {
     port = await serveManager.spawnServe(effectivePath, preferredModel, storageEnabled);
@@ -51,7 +54,8 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     const sseClient = new SSEClient(); sseClient.connect(`http://127.0.0.1:${port}`); sessionManager.setSseClient(threadId, sseClient);
     sseClient.onPartUpdated((part) => { if (part.sessionID === sessionId) accumulatedText = part.text; });
     sseClient.onSessionIdle((idleSessionId) => {
-      if (idleSessionId !== sessionId || !promptSent) return;
+      if (idleSessionId !== sessionId || !promptSent || responseHandled) return;
+      responseHandled = true;
       (async () => {
         try {
           if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
@@ -60,19 +64,25 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
             const result = formatOutputForMobile(accumulatedText);
             for (const chunk of result.chunks) await safeSend(chunk);
           }
-          sseClient.disconnect(); sessionManager.clearSseClient(threadId); await processNextInQueue(channel, threadId, parentChannelId);
-        } catch (error) { console.error('Error in onSessionIdle:', error); await safeSend('❌ An unexpected error occurred while processing the response.'); }
+          sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
+        } catch (error) { console.error('Error in onSessionIdle:', error); }
       })();
     });
     sseClient.onSessionError((errorSessionId, errorInfo) => {
-      if (errorSessionId !== sessionId || !promptSent) return; hasSessionError = true;
+      if (errorSessionId !== sessionId || !promptSent || responseHandled) return; hasSessionError = true; responseHandled = true;
+      console.error('OpenCode session error:', errorInfo);
       (async () => {
-        const errorMsg = errorInfo.data?.message || errorInfo.name || 'Unknown error'; await safeSend(`❌ **Error**: ${errorMsg}`);
-        sseClient.disconnect(); sessionManager.clearSseClient(threadId); const settings = dataStore.getQueueSettings(threadId);
-        if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); }
-      })().catch(console.error);
+        sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
+      })().catch((error) => console.error('Error continuing after session error:', error));
     });
-    sseClient.onError((error) => { (async () => { await safeSend(`❌ Connection error: ${error.message}`); sseClient.disconnect(); sessionManager.clearSseClient(threadId); const settings = dataStore.getQueueSettings(threadId); if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); } })().catch(console.error); });
+    sseClient.onError((error) => {
+      if (responseHandled) return;
+      responseHandled = true;
+      console.error('OpenCode SSE connection error:', error);
+      (async () => {
+        sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
+      })().catch((queueError) => console.error('Error continuing after SSE error:', queueError));
+    });
 
     const personality = userId ? dataStore.getUserPersonality(userId) : undefined;
     const effectivePrompt = personality
@@ -81,8 +91,8 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
     promptSent = true;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error'; await safeSend(`❌ OpenCode execution failed: ${errorMessage}`);
+    console.error('OpenCode execution failed:', error);
     const client = sessionManager.getSseClient(threadId); if (client) { client.disconnect(); sessionManager.clearSseClient(threadId); }
-    const settings = dataStore.getQueueSettings(threadId); if (settings.continueOnFailure) await processNextInQueue(channel, threadId, parentChannelId); else { dataStore.clearQueue(threadId); await safeSend('❌ Execution failed. Queue cleared.'); }
+    await continueQueue();
   }
 }
