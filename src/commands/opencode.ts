@@ -1,81 +1,48 @@
-import { 
-  SlashCommandBuilder, 
-  ChatInputCommandInteraction, 
-  MessageFlags,
-  ThreadChannel
-} from 'discord.js';
-import * as dataStore from '../services/dataStore.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, MessageFlags } from 'discord.js';
 import { getOrCreateThread } from '../utils/threadHelper.js';
 import type { Command } from './index.js';
 import { runPrompt } from '../services/executionService.js';
 import { isBusy } from '../services/queueManager.js';
 
-function getParentChannelId(interaction: ChatInputCommandInteraction): string {
-  const channel = interaction.channel;
-  if (channel?.isThread()) {
-    return (channel as ThreadChannel).parentId ?? interaction.channelId;
-  }
-  return interaction.channelId;
-}
-
 export const opencode: Command = {
   data: new SlashCommandBuilder()
-    .setName('opencode')
-    .setDescription('Send a command to OpenCode')
+    .setName('prompt')
+    .setDescription('Start a new AI conversation in a new thread')
     .addStringOption(option =>
       option.setName('prompt')
-        .setDescription('Prompt to send to OpenCode')
+        .setDescription('The first message for the new conversation')
         .setRequired(true)) as SlashCommandBuilder,
-  
+
   async execute(interaction: ChatInputCommandInteraction) {
     const prompt = interaction.options.getString('prompt', true);
-    const channelId = getParentChannelId(interaction);
-    const isInThread = interaction.channel?.isThread() ?? false;
-    
-    const projectPath = dataStore.getChannelProjectPath(channelId);
-    if (!projectPath) {
+
+    if (interaction.channel?.isThread()) {
       await interaction.reply({
-        content: '❌ No project set for this channel. Use `/use <alias>` to set a project.',
-        flags: MessageFlags.Ephemeral
+        content: '❌ Use `/prompt` from the parent channel. Normal messages in this thread already continue its conversation.',
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     await interaction.deferReply();
-    
+
     let thread;
     try {
-      if (isInThread && interaction.channel?.isThread()) {
-        thread = interaction.channel;
-      } else {
-        thread = await getOrCreateThread(interaction, prompt);
-      }
-    } catch {
-      await interaction.editReply({
-        content: '❌ Cannot create thread.',
-      });
+      thread = await getOrCreateThread(interaction, prompt);
+    } catch (error) {
+      console.error('Failed to create prompt thread:', error);
+      await interaction.editReply('❌ Cannot create the conversation thread.');
       return;
     }
-    
+
     const threadId = thread.id;
-    
+
     if (isBusy(threadId)) {
-      dataStore.addToQueue(threadId, {
-        prompt,
-        userId: interaction.user.id,
-        timestamp: Date.now()
-      });
-      await interaction.editReply({
-        content: '📥 Prompt added to queue.',
-      });
+      await interaction.editReply('📥 The new conversation is already busy.');
       return;
     }
 
-    await interaction.editReply({
-      content: `📌 **Prompt**: ${prompt}`
-    });
-
-    await runPrompt(thread as any, threadId, prompt, channelId);
-  }
+    await interaction.editReply(`🧵 **New conversation created:** ${thread}`);
+    await runPrompt(thread as any, threadId, prompt, interaction.channelId);
+  },
 };
-
