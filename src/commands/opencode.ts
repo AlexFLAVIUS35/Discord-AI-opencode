@@ -24,12 +24,17 @@ export const opencode: Command = {
       return;
     }
 
-    // Discord exposes authorizingIntegrationOwners as a map keyed by installation
-    // type, not userId/guildId properties. A user-install interaction has a user
-    // installation owner and no guild installation owner.
+    // Discord identifies USER_INSTALL as integration type "1". In a server,
+    // authorizingIntegrationOwners can contain both "0" and "1" when the user
+    // has the app installed both to their account and to that guild. In that
+    // case, the reliable distinction is whether this bot is actually installed
+    // in the guild: external/user-installed apps are not guild members.
     const owners = interaction.authorizingIntegrationOwners;
-    const ownerKeys = Object.keys(owners ?? {});
-    const isUserInstallOnly = ownerKeys.includes('1') && !ownerKeys.includes('0');
+    const hasUserInstallation = Boolean(owners?.['1']);
+    const botIsInstalledInGuild = Boolean(
+      interaction.guildId && interaction.client.guilds.cache.has(interaction.guildId),
+    );
+    const isUserInstallOnly = hasUserInstallation && !botIsInstalledInGuild;
 
     if (isUserInstallOnly) {
       const channel = interaction.channel;
