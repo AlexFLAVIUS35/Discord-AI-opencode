@@ -16,15 +16,15 @@ export async function startBot(): Promise<void> {
   
   const client = new Client({
     intents: [
-      GatewayIntentBits.Guilds, 
+      GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.MessageContent,
     ]
   });
   
   client.once(Events.ClientReady, (c) => {
     console.log(pc.green(`Ready! Logged in as ${pc.bold(c.user.tag)}`));
-    // Pre-warm model cache so autocomplete never hits cold execSync
     try { getCachedModels(); } catch { }
   });
   
@@ -33,13 +33,10 @@ export async function startBot(): Promise<void> {
   
   function gracefulShutdown(signal: string) {
     console.log(pc.yellow(`\n${signal} received. Shutting down gracefully...`));
-    
     serveManager.stopAll();
     console.log(pc.dim('All opencode serve instances stopped.'));
-    
     client.destroy();
     console.log(pc.dim('Discord client destroyed.'));
-    
     process.exit(0);
   }
   
