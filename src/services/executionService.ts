@@ -20,17 +20,21 @@ async function reactToLatestUserMessage(channel: TextBasedChannel, emoji: string
 }
 
 async function processAiReactions(channel: TextBasedChannel, text: string): Promise<string> {
-  // OpenCode can request a reaction by emitting [react:emoji]. This is intentionally
-  // simple so the model can decide when to react without needing filesystem access or MCP.
+  // [react:🥹✌️] means two reactions: 🥹 and ✌️. Intl.Segmenter keeps
+  // multi-codepoint emojis such as ❤️ and 👍🏽 intact while splitting adjacent emojis.
   const reactions: string[] = [];
-  const cleaned = text.replace(/\[react:([^\]\r\n]{1,32})\]/gu, (_match, emoji: string) => {
-    reactions.push(emoji.trim());
+  const cleaned = text.replace(/\[react:([^\]\r\n]{1,64})\]/gu, (_match, emojiText: string) => {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (const part of segmenter.segment(emojiText.trim())) {
+      const emoji = part.segment.trim();
+      if (emoji) reactions.push(emoji);
+    }
     return '';
   });
   for (const emoji of reactions) {
-    if (emoji) await reactToLatestUserMessage(channel, emoji);
+    await reactToLatestUserMessage(channel, emoji);
   }
-  return cleaned.trim();
+  return cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export async function runPrompt(channel: TextBasedChannel, threadId: string, prompt: string, parentChannelId: string, userId?: string): Promise<void> {
@@ -109,7 +113,7 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     });
 
     const personality = userId ? dataStore.getUserPersonality(userId) : undefined;
-    const reactionInstructions = `\n\nDiscord reaction capability: You may react to the user's latest message when you genuinely feel like it. To do so, include [react:EMOJI] in your response, for example [react:😭] or [react:💀]. The marker will be hidden from the user and the emoji will be added as a Discord reaction. Do not use this constantly; reactions should be occasional and spontaneous. If you want only a reaction and no text, output only the marker. Never explain the marker.`;
+    const reactionInstructions = `\n\nDiscord reaction capability: You may react to the user's latest message when you genuinely feel like it. To do so, include [react:EMOJI] in your response, for example [react:😭] or [react:💀]. You can also include normal text in the same response, and you can request multiple reactions in one marker, such as [react:🥹✌️]. Each adjacent emoji is treated as a separate reaction. The marker will be hidden from the user. Do not use reactions constantly; they should be occasional and spontaneous. If you want only a reaction and no text, output only the marker. Never explain the marker.`;
     const effectivePrompt = personality
       ? `[Permanent personality instructions for this Discord user]\n${personality}\n\n[User message]\n${prompt}${reactionInstructions}`
       : `${prompt}${reactionInstructions}`;
