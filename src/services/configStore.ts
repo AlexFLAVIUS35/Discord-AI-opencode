@@ -22,10 +22,28 @@ export interface AppConfig {
 
 const CONFIG_DIR = join(homedir(), '.remote-opencode');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+const ENV_FILE = join(CONFIG_DIR, '.env');
 
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  }
+}
+
+function loadEnvFile(): void {
+  if (!existsSync(ENV_FILE)) return;
+  try {
+    const content = readFileSync(ENV_FILE, 'utf-8');
+    for (const line of content.split(/\r?\n/)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!match) continue;
+      const [, key, rawValue] = match;
+      if (process.env[key] !== undefined) continue;
+      const value = rawValue.replace(/^(['"])(.*)\1$/, '$2');
+      process.env[key] = value;
+    }
+  } catch {
+    // Ignore an unreadable local env file; platform environment variables still work.
   }
 }
 
@@ -35,6 +53,7 @@ export function getConfigDir(): string {
 
 export function loadConfig(): AppConfig {
   ensureConfigDir();
+  loadEnvFile();
   if (!existsSync(CONFIG_FILE)) {
     return {};
   }
@@ -54,22 +73,32 @@ export function saveConfig(config: AppConfig): void {
 export function getBotConfig(): BotConfig | undefined {
   const bot = loadConfig().bot;
   const discordToken = process.env.DISCORD_TOKEN || bot?.discordToken;
+  const clientId = process.env.DISCORD_CLIENT_ID || bot?.clientId;
+  const guildId = process.env.DISCORD_GUILD_ID || bot?.guildId;
 
-  if (!discordToken || !bot?.clientId || !bot?.guildId) {
+  if (!discordToken || !clientId || !guildId) {
     return undefined;
   }
 
-  return {
-    discordToken,
-    clientId: bot.clientId,
-    guildId: bot.guildId,
-  };
+  return { discordToken, clientId, guildId };
 }
 
 export function setBotConfig(bot: BotConfig): void {
   const config = loadConfig();
   config.bot = bot;
   saveConfig(config);
+}
+
+export function setBotEnvironment(bot: BotConfig): void {
+  ensureConfigDir();
+  const content = [
+    `DISCORD_TOKEN=${JSON.stringify(bot.discordToken)}`,
+    `DISCORD_CLIENT_ID=${JSON.stringify(bot.clientId)}`,
+    `DISCORD_GUILD_ID=${JSON.stringify(bot.guildId)}`,
+    '',
+  ].join('\n');
+  writeFileSync(ENV_FILE, content, { encoding: 'utf-8', mode: 0o600 });
+  chmodSync(ENV_FILE, 0o600);
 }
 
 export function getPortConfig(): PortConfig | undefined {
@@ -115,7 +144,7 @@ export function removeAllowedUserId(id: string): boolean {
   const config = loadConfig();
   const current = config.allowedUserIds ?? [];
   if (!current.includes(id)) return false;
-  if (current.length <= 1) return false; // prevent removing last user
+  if (current.length <= 1) return false;
   config.allowedUserIds = current.filter(uid => uid !== id);
   saveConfig(config);
   return true;
@@ -123,7 +152,7 @@ export function removeAllowedUserId(id: string): boolean {
 
 export function isAuthorized(userId: string): boolean {
   const ids = getAllowedUserIds();
-  if (ids.length === 0) return true; // no restriction
+  if (ids.length === 0) return true;
   return ids.includes(userId);
 }
 
