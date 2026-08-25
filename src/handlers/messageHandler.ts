@@ -1,9 +1,10 @@
-import { Message, MessageFlags, ThreadChannel } from 'discord.js';
+import { Message, MessageFlags } from 'discord.js';
 import * as dataStore from '../services/dataStore.js';
 import { runPrompt } from '../services/executionService.js';
 import { isBusy } from '../services/queueManager.js';
 import { isAuthorized } from '../services/configStore.js';
 import { transcribe, isVoiceEnabled } from '../services/voiceService.js';
+import * as activation from '../services/activationService.js';
 
 async function safeReact(message: Message, emoji: string): Promise<void> {
   try { await message.react(emoji); }
@@ -19,24 +20,23 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   if (message.author.bot || message.system) return;
   if (!isAuthorized(message.author.id)) return;
 
-  const channel = message.channel;
-  const mentioned = message.client.user ? message.mentions.users.has(message.client.user.id) : false;
-  const mentionOnly = (process.env.DISCORD_MENTION_ONLY ?? 'true').toLowerCase() === 'true';
+  const conversationId = message.channel.id;
 
-  // DMs always work. In servers, mention the bot unless DISCORD_MENTION_ONLY=false.
-  if (message.guild && mentionOnly && !mentioned) return;
+  // Chat is opt-in per channel/thread. Once activated, normal messages work
+  // without /prompt and without mentioning the bot.
+  if (!activation.isActive(conversationId)) return;
 
   let prompt = message.content.trim();
-  if (mentioned && message.client.user) {
-    prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
-  }
-
   const isVoiceMessage = !prompt && isVoiceEnabled() && message.flags.has(MessageFlags.IsVoiceMessage);
   const voiceAttachment = isVoiceMessage ? message.attachments.first() : undefined;
+
   if (!prompt && !voiceAttachment) return;
 
-  const conversationId = channel.id;
-  const parentChannelId = channel.isThread() ? ((channel as ThreadChannel).parentId ?? channel.id) : channel.id;
+  if (message.client.user) {
+    prompt = prompt
+      .replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '')
+      .trim();
+  }
 
   if (isBusy(conversationId)) {
     if (voiceAttachment) {
@@ -67,5 +67,9 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     if (!prompt.trim()) { await safeReact(message, '❌'); return; }
   }
 
-  await runPrompt(channel, conversationId, prompt, parentChannelId);
+  const parentChannelId = message.channel.isThread()
+    ? (message.channel.parentId ?? conversationId)
+    : conversationId;
+
+  await runPrompt(message.channel, conversationId, prompt, parentChannelId);
 }
