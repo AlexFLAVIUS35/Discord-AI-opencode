@@ -29,7 +29,7 @@ export const opencode: Command = {
     // installation owner and no guild installation owner.
     const owners = interaction.authorizingIntegrationOwners;
     const ownerKeys = Object.keys(owners ?? {});
-    const isUserInstallOnly = ownerKeys.includes('0') && !ownerKeys.includes('1');
+    const isUserInstallOnly = ownerKeys.includes('1') && !ownerKeys.includes('0');
 
     if (isUserInstallOnly) {
       const channel = interaction.channel;
