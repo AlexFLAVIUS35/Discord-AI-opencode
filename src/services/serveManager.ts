@@ -10,7 +10,7 @@ const DEFAULT_PORT_MIN = 14097;
 const DEFAULT_PORT_MAX = 14200;
 const WINDOWS_OPENCODE_COMMANDS = ["opencode.cmd", "opencode.exe", "opencode"];
 const POSIX_OPENCODE_COMMANDS = ["opencode"];
-const READY_POLL_INTERVAL_MS = 150;
+const READY_POLL_INTERVAL_MS = 50;
 
 const instances = new Map<string, ServeInstance>();
 
