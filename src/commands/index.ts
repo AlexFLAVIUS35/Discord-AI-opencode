@@ -1,10 +1,10 @@
 import { Collection, SlashCommandBuilder, AutocompleteInteraction } from 'discord.js';
-import { opencode } from './opencode.js';
 import { model } from './model.js';
 import { allow } from './allow.js';
 import { voice } from './voice.js';
 import { session } from './session.js';
 import { storageCommand } from './storage.js';
+import { activation, deactivate } from './activation.js';
 
 export interface Command {
   data: SlashCommandBuilder;
@@ -14,8 +14,9 @@ export interface Command {
 
 export const commands = new Collection<string, Command>();
 
-// Orange-style interface: keep only the useful chat controls.
-commands.set(opencode.data.name, opencode);
+// Simple Orange-style interface: activate a channel/thread, then just chat normally.
+commands.set(activation.data.name, activation);
+commands.set(deactivate.data.name, deactivate);
 commands.set(model.data.name, model);
 commands.set(allow.data.name, allow);
 commands.set(voice.data.name, voice);
