@@ -20,11 +20,11 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   if (!isAuthorized(message.author.id)) return;
   const conversationId = message.channel.id;
 
-  // User-installed applications and DMs have no guild channel activation state.
-  // Treat those conversations as permanently active, with no /activate or
-  // /deactivate requirement. Guild channels retain the normal activation flow.
-  const alwaysActive = !message.guildId;
-  if (!alwaysActive && !activation.isActive(conversationId)) return;
+  // DMs (including User Install DMs) start active by default. /deactivate
+  // stores an explicit false value, so the user can still turn DM activity off.
+  // Guild channels retain the normal opt-in activation flow.
+  const defaultActive = !message.guildId;
+  if (!activation.isActive(conversationId, defaultActive)) return;
 
   let prompt = message.content.trim();
   const isVoiceMessage = !prompt && isVoiceEnabled() && message.flags.has(MessageFlags.IsVoiceMessage);
