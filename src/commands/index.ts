@@ -18,7 +18,7 @@ export interface Command {
 
 export const commands = new Collection<string, Command>();
 
-// These commands are available to both guild-installed and user-installed apps.
+// Commands available to both guild-installed and user-installed apps.
 const userAppContexts = [
   InteractionContextType.Guild,
   InteractionContextType.BotDM,
@@ -39,10 +39,24 @@ personality.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInst
 interrupt.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
 reset.data.setContexts(...userAppContexts).setIntegrationTypes(...bothInstallations);
 
-// Activation controls are strictly guild-install commands. User-installed apps
-// always behave as an active conversation and never expose these commands.
-activation.data.setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall);
-deactivate.data.setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall);
+// Activation controls are available in guild installs and User Install DMs.
+// User Install guild use is ignored by the interaction handler.
+activation.data.setContexts(
+  InteractionContextType.Guild,
+  InteractionContextType.BotDM,
+  InteractionContextType.PrivateChannel,
+).setIntegrationTypes(
+  ApplicationIntegrationType.GuildInstall,
+  ApplicationIntegrationType.UserInstall,
+);
+deactivate.data.setContexts(
+  InteractionContextType.Guild,
+  InteractionContextType.BotDM,
+  InteractionContextType.PrivateChannel,
+).setIntegrationTypes(
+  ApplicationIntegrationType.GuildInstall,
+  ApplicationIntegrationType.UserInstall,
+);
 
 commands.set(activation.data.name, activation);
 commands.set(deactivate.data.name, deactivate);
