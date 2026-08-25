@@ -1,18 +1,13 @@
 {
-  "name": "remote-opencode",
-  "version": "1.5.3",
-  "description": "Discord bot for remote OpenCode CLI access",
+  "name": "discord-ai-opencode",
+  "version": "1.5.3-orange.1",
+  "description": "A simple Discord AI chat interface powered by OpenCode, based on remote-opencode",
   "main": "dist/src/index.js",
   "bin": {
-    "remote-opencode": "./dist/src/cli.js"
+    "discord-ai-opencode": "./dist/src/cli.js"
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "engines": {
-    "node": ">=22.0.0"
-  },
+  "files": ["dist", "README.md", "ORANGE_MODE.md"],
+  "engines": { "node": ">=22.0.0" },
   "scripts": {
     "build": "tsc",
     "start": "node --no-deprecation dist/src/cli.js start",
@@ -24,13 +19,7 @@
     "release:minor": "npm version minor && npm run build && npm publish",
     "release:major": "npm version major && npm run build && npm publish"
   },
-  "keywords": [
-    "discord",
-    "opencode",
-    "cli",
-    "remote",
-    "bot"
-  ],
+  "keywords": ["discord", "opencode", "ai", "chat", "voice"],
   "author": "",
   "license": "MIT",
   "type": "module",
@@ -54,7 +43,5 @@
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
-  "overrides": {
-    "undici": "^6.23.0"
-  }
+  "overrides": { "undici": "^6.23.0" }
 }
