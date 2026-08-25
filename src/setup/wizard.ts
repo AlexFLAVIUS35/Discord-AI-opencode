@@ -1,7 +1,7 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import open from 'open';
-import { setBotConfig, setBotEnvironment, getBotConfig, hasBotConfig, addAllowedUserId, setOpenAIApiKey } from '../services/configStore.js';
+import { setBotConfig, setBotEnvironment, getBotConfig, hasBotConfig, addAllowedUserId, setOpenAIApiKey, clearBotConfig } from '../services/configStore.js';
 import { deployCommands } from './deploy.js';
 
 const DISCORD_DEV_URL = 'https://discord.com/developers/applications';
@@ -52,6 +52,23 @@ export async function runSetupWizard(): Promise<void> {
     if (p.isCancel(overwrite) || !overwrite) { p.outro('Setup cancelled.'); return; }
   }
 
+  const storageMode = await p.select({
+    message: 'How should Discord credentials be stored?',
+    options: [
+      { value: 'config', label: 'Local config.json', hint: 'Stores credentials locally in ~/.remote-opencode/config.json' },
+      { value: 'environment', label: 'Environment variables', hint: 'Recommended for Railway, Docker, CI, and secret-based deployments' },
+    ],
+    initialValue: 'environment',
+  });
+  if (p.isCancel(storageMode)) { p.cancel('Setup cancelled.'); process.exit(0); }
+
+  p.note(
+    storageMode === 'environment'
+      ? 'Selected: Environment variables\n\nThe token, Client ID, and Guild ID will be saved to ~/.remote-opencode/.env locally. On Railway or another platform, set the same variables in its environment/secret settings. They will take priority over config.json.'
+      : 'Selected: Local config.json\n\nThe token, Client ID, and Guild ID will be saved to ~/.remote-opencode/config.json.',
+    'Credential storage'
+  );
+
   p.note(`We'll open the Discord Developer Portal in your browser.\n\n1. Click ${pc.bold('"New Application"')}\n2. Give your application a name (e.g., "Remote OpenCode")\n3. Copy the ${pc.bold('Application ID')} from "General Information"`, 'Step 1: Create Discord Application');
   const openPortal = await p.text({ message: `Press ${pc.cyan('Enter')} to open Discord Developer Portal...`, placeholder: 'Press Enter', defaultValue: '' });
   if (p.isCancel(openPortal)) { p.cancel('Setup cancelled.'); process.exit(0); }
@@ -72,16 +89,6 @@ export async function runSetupWizard(): Promise<void> {
   const guildId = await p.text({ message: 'Enter your Discord Guild (Server) ID:', placeholder: 'e.g., 1234567890123456789', validate: validateGuildId });
   if (p.isCancel(guildId)) { p.cancel('Setup cancelled.'); process.exit(0); }
 
-  const storageMode = await p.select({
-    message: 'Where should Discord credentials be stored?',
-    options: [
-      { value: 'config', label: 'Local config.json', hint: 'Simple local setup' },
-      { value: 'environment', label: 'Environment variables', hint: 'Recommended for Railway, Docker, CI, and secrets' },
-    ],
-    initialValue: 'environment',
-  });
-  if (p.isCancel(storageMode)) { p.cancel('Setup cancelled.'); process.exit(0); }
-
   p.note(`Restrict who can use this bot by setting an owner.\n\n1. In Discord, right-click ${pc.bold('YOUR profile')}\n2. Click ${pc.bold('"Copy User ID"')}\n\n${pc.dim('(Requires Developer Mode — same setting as Step 4)')}\n${pc.dim('Leave blank to allow everyone)')}`, 'Step 5: Set Bot Owner (Optional)');
   const ownerId = await p.text({ message: 'Enter your Discord User ID (leave blank to allow everyone):', placeholder: 'e.g., 1234567890123456789', defaultValue: '', validate: validateUserId });
   if (p.isCancel(ownerId)) { p.cancel('Setup cancelled.'); process.exit(0); }
@@ -91,11 +98,12 @@ export async function runSetupWizard(): Promise<void> {
   const botConfig = { discordToken: discordToken as string, clientId: clientId as string, guildId: guildId as string };
   if (storageMode === 'environment') {
     setBotEnvironment(botConfig);
+    clearBotConfig();
     s.stop('Environment credentials saved to ~/.remote-opencode/.env');
-    p.note(`Your credentials are loaded as:\n\nDISCORD_TOKEN\nDISCORD_CLIENT_ID\nDISCORD_GUILD_ID\n\nFor Railway, set the same three variables in Railway. The platform environment variables automatically override the local .env file.`, 'Environment setup');
+    p.note('For Railway, set these environment variables:\n\nDISCORD_TOKEN\nDISCORD_CLIENT_ID\nDISCORD_GUILD_ID\n\nPlatform environment variables automatically take priority over the local .env file.', 'Deployment environment');
   } else {
     setBotConfig(botConfig);
-    s.stop('Configuration saved!');
+    s.stop('Configuration saved to ~/.remote-opencode/config.json');
   }
 
   if (ownerId && (ownerId as string).length > 0) addAllowedUserId(ownerId as string);
