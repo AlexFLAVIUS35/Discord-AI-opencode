@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 interface StorageState {
@@ -9,6 +9,7 @@ interface StorageState {
 
 const CONFIG_DIR = join(homedir(), '.remote-opencode');
 const STATE_FILE = join(CONFIG_DIR, 'storage.json');
+const CHAT_ROOT = join(tmpdir(), 'discord-opencode-chat');
 
 function load(): Record<string, StorageState> {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
@@ -57,4 +58,15 @@ export function getPath(threadId: string): string | undefined {
 
 export function getStatus(threadId: string): StorageState {
   return load()[threadId] ?? { enabled: false };
+}
+
+export function getChatWorkspace(threadId: string): string {
+  const safeId = threadId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const path = join(CHAT_ROOT, safeId);
+  if (!existsSync(path)) mkdirSync(path, { recursive: true });
+  return path;
+}
+
+export function getWorkspace(threadId: string): string {
+  return getPath(threadId) ?? getChatWorkspace(threadId);
 }
