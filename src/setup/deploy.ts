@@ -1,4 +1,4 @@
-import { REST, Routes, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../services/configStore.js';
 import { commands } from '../commands/index.js';
 import { initializeProxySupport } from '../services/proxySupport.js';
@@ -11,25 +11,14 @@ export async function deployCommands(): Promise<void> {
     throw new Error('Bot configuration not found. Run setup first.');
   }
 
-  const commandsData = Array.from(commands.values()).map(c => {
-    const data = c.data.toJSON() as any;
-
-    // Keep activation controls strictly guild-install commands at the raw REST
-    // payload level too. This prevents stale/incorrect integration metadata from
-    // making /activate or /deactivate appear in User Install command menus.
-    if (data.name === 'activate' || data.name === 'deactivate') {
-      data.integration_types = [ApplicationIntegrationType.GuildInstall];
-      data.contexts = [InteractionContextType.Guild];
-    }
-
-    return data;
-  });
+  // Use the command metadata from commands/index.ts as-is. In particular,
+  // activation commands must retain their DM + guild contexts for User Install
+  // DMs and Guild Install servers respectively.
+  const commandsData = Array.from(commands.values()).map(c => c.data.toJSON());
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
 
   initializeProxySupport();
 
-  // Remove the old guild-scoped registration first. The project now has one
-  // canonical global registration so Discord does not show duplicate commands.
   console.log(pc.dim(`Removing legacy guild command registration from ${config.guildId}...`));
   await rest.put(
     Routes.applicationGuildCommands(config.clientId, config.guildId),
