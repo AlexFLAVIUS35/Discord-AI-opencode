@@ -15,15 +15,21 @@ export async function deployCommands(): Promise<void> {
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
 
   initializeProxySupport();
-  console.log(pc.dim(`Deploying ${commandsData.length} global slash commands...`));
 
-  // Global application commands are available to both server installations and
-  // user-installed applications (provided the Discord application itself has
-  // the User Install / applications.commands installation context enabled).
+  // Remove the old guild-scoped registration first. The project now has one
+  // canonical global registration so Discord does not show duplicate commands.
+  console.log(pc.dim(`Removing legacy guild command registration from ${config.guildId}...`));
+  await rest.put(
+    Routes.applicationGuildCommands(config.clientId, config.guildId),
+    { body: [] },
+  );
+
+  console.log(pc.dim(`Deploying ${commandsData.length} global slash commands...`));
   await rest.put(
     Routes.applicationCommands(config.clientId),
-    { body: commandsData }
+    { body: commandsData },
   );
 
   console.log(pc.green(`Successfully deployed ${commandsData.length} global slash commands.`));
+  console.log(pc.dim('Guild installation uses the global command set; User Install uses the commands marked for user installation.'));
 }
