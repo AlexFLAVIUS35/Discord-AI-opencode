@@ -2,13 +2,15 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN apk add --no-cache python3 make g++ \
+    && npm ci --omit=dev
 
 # Stage 2: Build
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN apk add --no-cache python3 make g++ \
+    && npm ci
 COPY . .
 RUN npm run build
 
