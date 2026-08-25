@@ -1,4 +1,4 @@
-import { TextBasedChannel, EmbedBuilder } from 'discord.js';
+import { TextBasedChannel, EmbedBuilder, Message } from 'discord.js';
 import * as dataStore from './dataStore.js';
 import * as sessionManager from './sessionManager.js';
 import * as serveManager from './serveManager.js';
@@ -7,6 +7,31 @@ import * as storage from './storageService.js';
 import { SSEClient } from './sseClient.js';
 import { formatOutputForMobile } from '../utils/messageFormatter.js';
 import { processNextInQueue } from './queueManager.js';
+
+async function reactToLatestUserMessage(channel: TextBasedChannel, emoji: string): Promise<void> {
+  try {
+    if (!('messages' in channel)) return;
+    const messages = await (channel as any).messages.fetch({ limit: 20 });
+    const target = messages.find((message: Message) => !message.author.bot && !message.system);
+    if (target) await target.react(emoji);
+  } catch (error) {
+    console.error(`Failed to add AI reaction ${emoji}:`, error instanceof Error ? error.message : error);
+  }
+}
+
+async function processAiReactions(channel: TextBasedChannel, text: string): Promise<string> {
+  // OpenCode can request a reaction by emitting [react:emoji]. This is intentionally
+  // simple so the model can decide when to react without needing filesystem access or MCP.
+  const reactions: string[] = [];
+  const cleaned = text.replace(/\[react:([^\]\r\n]{1,32})\]/gu, (_match, emoji: string) => {
+    reactions.push(emoji.trim());
+    return '';
+  });
+  for (const emoji of reactions) {
+    if (emoji) await reactToLatestUserMessage(channel, emoji);
+  }
+  return cleaned.trim();
+}
 
 export async function runPrompt(channel: TextBasedChannel, threadId: string, prompt: string, parentChannelId: string, userId?: string): Promise<void> {
   const storageEnabled = storage.isEnabled(threadId);
@@ -61,8 +86,11 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
           if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
           if (!accumulatedText.trim()) { await safeSend('⚠️ No output received — the model may have encountered an issue.'); }
           else {
-            const result = formatOutputForMobile(accumulatedText);
-            for (const chunk of result.chunks) await safeSend(chunk);
+            const reactedText = await processAiReactions(channel, accumulatedText);
+            if (reactedText) {
+              const result = formatOutputForMobile(reactedText);
+              for (const chunk of result.chunks) await safeSend(chunk);
+            }
           }
           sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
         } catch (error) { console.error('Error in onSessionIdle:', error); }
@@ -71,23 +99,20 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     sseClient.onSessionError((errorSessionId, errorInfo) => {
       if (errorSessionId !== sessionId || !promptSent || responseHandled) return; hasSessionError = true; responseHandled = true;
       console.error('OpenCode session error:', errorInfo);
-      (async () => {
-        sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
-      })().catch((error) => console.error('Error continuing after session error:', error));
+      (async () => { sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((error) => console.error('Error continuing after session error:', error));
     });
     sseClient.onError((error) => {
       if (responseHandled) return;
       responseHandled = true;
       console.error('OpenCode SSE connection error:', error);
-      (async () => {
-        sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
-      })().catch((queueError) => console.error('Error continuing after SSE error:', queueError));
+      (async () => { sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((queueError) => console.error('Error continuing after SSE error:', queueError));
     });
 
     const personality = userId ? dataStore.getUserPersonality(userId) : undefined;
+    const reactionInstructions = `\n\nDiscord reaction capability: You may react to the user's latest message when you genuinely feel like it. To do so, include [react:EMOJI] in your response, for example [react:😭] or [react:💀]. The marker will be hidden from the user and the emoji will be added as a Discord reaction. Do not use this constantly; reactions should be occasional and spontaneous. If you want only a reaction and no text, output only the marker. Never explain the marker.`;
     const effectivePrompt = personality
-      ? `[Permanent personality instructions for this Discord user]\n${personality}\n\n[User message]\n${prompt}`
-      : prompt;
+      ? `[Permanent personality instructions for this Discord user]\n${personality}\n\n[User message]\n${prompt}${reactionInstructions}`
+      : `${prompt}${reactionInstructions}`;
     await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
     promptSent = true;
   } catch (error) {
