@@ -7,6 +7,7 @@ import { session } from './session.js';
 import { storageCommand } from './storage.js';
 import { activation, deactivate } from './activation.js';
 import { personality } from './personality.js';
+import { interrupt } from './interrupt.js';
 
 export interface Command {
   data: SlashCommandBuilder;
@@ -26,3 +27,4 @@ commands.set(voice.data.name, voice);
 commands.set(session.data.name, session);
 commands.set(storageCommand.data.name, storageCommand);
 commands.set(personality.data.name, personality);
+commands.set(interrupt.data.name, interrupt);
