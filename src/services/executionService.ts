@@ -36,7 +36,6 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
 
   const effectivePath = storageEnabled ? (worktreeMapping?.worktreePath ?? projectPath) : projectPath;
   const preferredModel = dataStore.getChannelModel(parentChannelId);
-
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`interrupt_${threadId}`).setLabel('⏸️ Interrupt').setStyle(ButtonStyle.Secondary));
   let streamMessage: Message;
   try { streamMessage = await (channel as any).send({ content: '⠦ **Running...**', components: [buttons] }); } catch { return; }
