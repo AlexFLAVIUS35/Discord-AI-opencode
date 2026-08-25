@@ -35,17 +35,24 @@ export const opencode: Command = {
     const isUserInstallOnly = hasUserInstallation && !botIsInstalledInGuild;
 
     if (isUserInstallOnly) {
-      // User-app interactions can expose a channel ID without resolving
-      // interaction.channel. Fetch it explicitly; fall back to the user's DM
-      // so the command still works rather than attempting to create a thread.
+      // User-app interactions should answer in the exact context where /prompt
+      // was invoked. Do not fall back to a DM: user-installed commands used in
+      // a server must remain visible in that server channel.
       const channel = interaction.channel
-        ?? await interaction.client.channels.fetch(interaction.channelId).catch(() => null)
-        ?? await interaction.user.createDM();
+        ?? await interaction.client.channels.fetch(interaction.channelId).catch(() => null);
+
+      if (!channel) {
+        await interaction.reply({
+          content: '❌ Cannot access the server channel for this User App command.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await interaction.deleteReply().catch(() => {});
 
-      const conversationId = interaction.channelId || interaction.user.id;
+      const conversationId = interaction.channelId;
       await runPrompt(channel as any, conversationId, prompt, conversationId, interaction.user.id);
       return;
     }
