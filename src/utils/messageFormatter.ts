@@ -2,6 +2,38 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
+/** Remove OpenCode/internal tool protocol that must never be shown to Discord users. */
+export function stripToolProtocol(text: string): string {
+  let cleaned = text;
+
+  // Remove complete tool-call blocks first.
+  cleaned = cleaned.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '');
+
+  // Remove leaked tool protocol lines/tags when a provider returns an incomplete block.
+  cleaned = cleaned
+    .replace(/^\s*<\/?tool_call>\s*$/gim, '')
+    .replace(/^\s*<\/?function(?:=[^>\s]+)?(?:\s+[^>]*)?>\s*$/gim, '')
+    .replace(/^\s*<\/?parameter(?:=[^>\s]+)?(?:\s+[^>]*)?>\s*$/gim, '')
+    .replace(/^\s*<\/?tool(?:=[^>\s]+)?(?:\s+[^>]*)?>\s*$/gim, '');
+
+  // Handle single-line leaked protocol fragments.
+  cleaned = cleaned
+    .replace(/<tool_call>[^\n]*/gi, '')
+    .replace(/<function=[^>]*>/gi, '')
+    .replace(/<parameter=[^>]*>/gi, '')
+    .replace(/<\/?(?:function|parameter|tool_call|tool)>/gi, '');
+
+  // Remove protocol-shaped command payloads that sometimes appear after the tags.
+  cleaned = cleaned
+    .replace(/^\s*<[^>]+>\s*$/gm, line => {
+      const value = line.trim();
+      return /^(?:<\/?(?:function|parameter|tool_call|tool)|<function=|<parameter=)/i.test(value) ? '' : line;
+    })
+    .replace(/\n{3,}/g, '\n\n');
+
+  return cleaned.trim();
+}
+
 export interface SSEEvent {
   type: string;
   properties: {
@@ -78,7 +110,7 @@ export function parseOpenCodeOutput(buffer: string): string {
     }
   }
 
-  let result = textParts.join('\n');
+  let result = stripToolProtocol(textParts.join('\n'));
 
   if (lastFinish?.part?.tokens) {
     const tokens = lastFinish.part.tokens;
@@ -89,13 +121,12 @@ export function parseOpenCodeOutput(buffer: string): string {
     }
   }
 
-  return result;
+  return result.trim();
 }
 
 export function buildContextHeader(branchName: string, modelName: string): string {
   return `🌿 \`${branchName}\` · 🤖 \`${modelName}\``;
 }
-
 
 export function formatOutput(buffer: string, maxLength: number = 1900): string {
   const parsed = parseOpenCodeOutput(buffer);
