@@ -24,9 +24,8 @@ export const opencode: Command = {
       return;
     }
 
-    // Discord identifies USER_INSTALL as integration type "1". A user-installed
-    // app can be invoked without the bot being installed in the guild, so it
-    // must never depend on guild thread creation.
+    // Discord identifies USER_INSTALL as integration type "1". User-installed
+    // apps can be invoked in a server without being installed in that server.
     const owners = interaction.authorizingIntegrationOwners;
     const hasUserInstallation = Boolean(owners?.['1']);
     const botIsInstalledInGuild = Boolean(
@@ -35,25 +34,28 @@ export const opencode: Command = {
     const isUserInstallOnly = hasUserInstallation && !botIsInstalledInGuild;
 
     if (isUserInstallOnly) {
-      // User-app interactions should answer in the exact context where /prompt
-      // was invoked. Do not fall back to a DM: user-installed commands used in
-      // a server must remain visible in that server channel.
-      const channel = interaction.channel
-        ?? await interaction.client.channels.fetch(interaction.channelId).catch(() => null);
+      // For a User App, Discord's interaction channel may be unavailable to the
+      // bot because the app is not installed in the guild. In that case the
+      // interaction itself is the only server-visible response mechanism.
+      // Do NOT try to fetch/read the server channel or create a thread.
+      await interaction.reply({ content: '⏳', flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.deleteReply().catch(() => {});
 
-      if (!channel) {
-        await interaction.reply({
-          content: '❌ Cannot access the server channel for this User App command.',
-          flags: MessageFlags.Ephemeral,
-        });
+      const channel = interaction.channel;
+      if (channel) {
+        const conversationId = interaction.channelId;
+        await runPrompt(channel as any, conversationId, prompt, conversationId, interaction.user.id);
         return;
       }
 
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.deleteReply().catch(() => {});
-
-      const conversationId = interaction.channelId;
-      await runPrompt(channel as any, conversationId, prompt, conversationId, interaction.user.id);
+      // Discord may intentionally omit channel access for external/user apps.
+      // Keep the command functional rather than attempting a forbidden guild API
+      // lookup. runPrompt needs a channel to post follow-up messages, so surface
+      // this as an ephemeral interaction response.
+      await interaction.followUp({
+        content: '❌ Discord did not provide this User App with access to the server channel.',
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
 
