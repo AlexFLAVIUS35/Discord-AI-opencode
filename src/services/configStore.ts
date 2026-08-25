@@ -52,7 +52,18 @@ export function saveConfig(config: AppConfig): void {
 }
 
 export function getBotConfig(): BotConfig | undefined {
-  return loadConfig().bot;
+  const bot = loadConfig().bot;
+  const discordToken = process.env.DISCORD_TOKEN || bot?.discordToken;
+
+  if (!discordToken || !bot?.clientId || !bot?.guildId) {
+    return undefined;
+  }
+
+  return {
+    discordToken,
+    clientId: bot.clientId,
+    guildId: bot.guildId,
+  };
 }
 
 export function setBotConfig(bot: BotConfig): void {
@@ -72,8 +83,7 @@ export function setPortConfig(ports: PortConfig): void {
 }
 
 export function hasBotConfig(): boolean {
-  const bot = getBotConfig();
-  return !!(bot?.discordToken && bot?.clientId && bot?.guildId);
+  return getBotConfig() !== undefined;
 }
 
 export function clearBotConfig(): void {
