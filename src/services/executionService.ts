@@ -8,6 +8,8 @@ import { SSEClient } from './sseClient.js';
 import { formatOutputForMobile } from '../utils/messageFormatter.js';
 import { processNextInQueue } from './queueManager.js';
 
+const RUNNING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 export async function runPrompt(channel: TextBasedChannel, threadId: string, prompt: string, parentChannelId: string, userId?: string): Promise<void> {
   const storageEnabled = storage.isEnabled(threadId);
   const projectPath = storage.getWorkspace(threadId);
@@ -38,10 +40,16 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
   const preferredModel = dataStore.getChannelModel(parentChannelId);
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`interrupt_${threadId}`).setLabel('⏸️ Interrupt').setStyle(ButtonStyle.Secondary));
   let streamMessage: Message;
-  try { streamMessage = await (channel as any).send({ content: '⠦ **Running...**', components: [buttons] }); } catch { return; }
+  try { streamMessage = await (channel as any).send({ content: '⠋ **Running...**', components: [buttons] }); } catch { return; }
+
+  let frameIndex = 1;
+  const animationTimer = setInterval(() => {
+    void streamMessage.edit({ content: `${RUNNING_FRAMES[frameIndex++ % RUNNING_FRAMES.length]} **Running...**`, components: [buttons] }).catch(() => {});
+  }, 700);
+  const stopAnimation = () => clearInterval(animationTimer);
 
   let port: number; let sessionId: string; let accumulatedText = ''; let promptSent = false; let hasSessionError = false;
-  const updateStreamMessage = async (content: string, components: ActionRowBuilder<ButtonBuilder>[] = []): Promise<boolean> => { try { await streamMessage.edit({ content, components }); return true; } catch (error) { console.error('Failed to edit stream message:', error instanceof Error ? error.message : error); return false; } };
+  const updateStreamMessage = async (content: string, components: ActionRowBuilder<ButtonBuilder>[] = []): Promise<boolean> => { stopAnimation(); try { await streamMessage.edit({ content, components }); return true; } catch (error) { console.error('Failed to edit stream message:', error instanceof Error ? error.message : error); return false; } };
   const safeSend = async (content: string): Promise<boolean> => { try { await (channel as any).send({ content }); return true; } catch (error) { console.error('Failed to send message:', error instanceof Error ? error.message : error); return false; } };
 
   try {
@@ -56,14 +64,14 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
       if (idleSessionId !== sessionId || !promptSent) return;
       (async () => {
         try {
-          if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
+          if (hasSessionError) { stopAnimation(); sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
           if (!accumulatedText.trim()) { const edited = await updateStreamMessage('⚠️ No output received — the model may have encountered an issue.'); if (!edited) await safeSend('⚠️ No output received — the model may have encountered an issue.'); }
           else {
             const result = formatOutputForMobile(accumulatedText); const editSuccess = await updateStreamMessage(result.chunks[0]); const startIndex = editSuccess ? 1 : 0;
             for (let i = startIndex; i < result.chunks.length; i++) await safeSend(result.chunks[i]);
           }
           sseClient.disconnect(); sessionManager.clearSseClient(threadId); await processNextInQueue(channel, threadId, parentChannelId);
-        } catch (error) { console.error('Error in onSessionIdle:', error); await safeSend('❌ An unexpected error occurred while processing the response.'); }
+        } catch (error) { stopAnimation(); console.error('Error in onSessionIdle:', error); await safeSend('❌ An unexpected error occurred while processing the response.'); }
       })();
     });
     sseClient.onSessionError((errorSessionId, errorInfo) => {
