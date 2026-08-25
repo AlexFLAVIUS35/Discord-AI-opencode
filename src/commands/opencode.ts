@@ -24,11 +24,9 @@ export const opencode: Command = {
       return;
     }
 
-    // Discord identifies USER_INSTALL as integration type "1". In a server,
-    // authorizingIntegrationOwners can contain both "0" and "1" when the user
-    // has the app installed both to their account and to that guild. In that
-    // case, the reliable distinction is whether this bot is actually installed
-    // in the guild: external/user-installed apps are not guild members.
+    // Discord identifies USER_INSTALL as integration type "1". A user-installed
+    // app can be invoked without the bot being installed in the guild, so it
+    // must never depend on guild thread creation.
     const owners = interaction.authorizingIntegrationOwners;
     const hasUserInstallation = Boolean(owners?.['1']);
     const botIsInstalledInGuild = Boolean(
@@ -37,15 +35,18 @@ export const opencode: Command = {
     const isUserInstallOnly = hasUserInstallation && !botIsInstalledInGuild;
 
     if (isUserInstallOnly) {
-      const channel = interaction.channel;
-      if (!channel) {
-        await interaction.reply({ content: '❌ Cannot access the current conversation.', flags: MessageFlags.Ephemeral });
-        return;
-      }
+      // User-app interactions can expose a channel ID without resolving
+      // interaction.channel. Fetch it explicitly; fall back to the user's DM
+      // so the command still works rather than attempting to create a thread.
+      const channel = interaction.channel
+        ?? await interaction.client.channels.fetch(interaction.channelId).catch(() => null)
+        ?? await interaction.user.createDM();
 
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await interaction.deleteReply().catch(() => {});
-      await runPrompt(channel as any, interaction.channelId, prompt, interaction.channelId, interaction.user.id);
+
+      const conversationId = interaction.channelId || interaction.user.id;
+      await runPrompt(channel as any, conversationId, prompt, conversationId, interaction.user.id);
       return;
     }
 
