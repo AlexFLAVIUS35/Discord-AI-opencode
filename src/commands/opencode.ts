@@ -24,6 +24,25 @@ export const opencode: Command = {
       return;
     }
 
+    // A user-installed app has no guild installation owner for this interaction.
+    // In that mode /prompt behaves like active mode: no Discord thread is created.
+    // Guild-installed /prompt keeps the original thread-based behavior unchanged.
+    const owners = interaction.authorizingIntegrationOwners;
+    const isUserInstallOnly = Boolean(owners?.userId && !owners?.guildId);
+
+    if (isUserInstallOnly) {
+      const channel = interaction.channel;
+      if (!channel) {
+        await interaction.reply({ content: '❌ Cannot access the current conversation.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferReply();
+      await interaction.deleteReply().catch(() => {});
+      await runPrompt(channel as any, interaction.channelId, prompt, interaction.channelId, interaction.user.id);
+      return;
+    }
+
     await interaction.deferReply();
 
     let thread;
