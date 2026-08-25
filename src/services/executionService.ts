@@ -5,7 +5,7 @@ import * as serveManager from './serveManager.js';
 import * as worktreeManager from './worktreeManager.js';
 import * as storage from './storageService.js';
 import { SSEClient } from './sseClient.js';
-import { formatOutput, formatOutputForMobile, buildContextHeader } from '../utils/messageFormatter.js';
+import { formatOutputForMobile, buildContextHeader } from '../utils/messageFormatter.js';
 import { processNextInQueue } from './queueManager.js';
 
 export async function runPrompt(channel: TextBasedChannel, threadId: string, prompt: string, parentChannelId: string): Promise<void> {
@@ -48,12 +48,9 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
 
   const effectivePath = storageEnabled ? (worktreeMapping?.worktreePath ?? projectPath) : projectPath;
   const preferredModel = dataStore.getChannelModel(parentChannelId);
-  const modelDisplay = preferredModel ? `${preferredModel}` : 'default';
-  const branchName = storageEnabled && worktreeMapping?.branchName
-    ? worktreeMapping.branchName
-    : (storageEnabled && configuredProjectPath ? await worktreeManager.getCurrentBranch(effectivePath) : null) ?? 'chat';
 
-  // Orange mode: keep the progress message minimal. No AI Chat header or prompt echo.
+  // Orange mode: show only a minimal running message while OpenCode works.
+  // The final AI response replaces this message; no AI Chat/prompt echo or live output.
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`interrupt_${threadId}`).setLabel('⏸️ Interrupt').setStyle(ButtonStyle.Secondary)
   );
@@ -67,15 +64,11 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
 
   let port: number;
   let sessionId: string;
-  let updateInterval: NodeJS.Timeout | null = null;
   let accumulatedText = '';
-  let lastContent = '';
-  let tick = 0;
   let promptSent = false;
   let hasSessionError = false;
-  const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-  const updateStreamMessage = async (content: string, components: ActionRowBuilder<ButtonBuilder>[]): Promise<boolean> => {
+  const updateStreamMessage = async (content: string, components: ActionRowBuilder<ButtonBuilder>[] = []): Promise<boolean> => {
     try { await streamMessage.edit({ content, components }); return true; }
     catch (error) { console.error('Failed to edit stream message:', error instanceof Error ? error.message : error); return false; }
   };
@@ -86,7 +79,6 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
 
   try {
     port = await serveManager.spawnServe(effectivePath, preferredModel, storageEnabled);
-    await updateStreamMessage('⠦ **Running...**', [buttons]);
     await serveManager.waitForReady(port, 30000, effectivePath, preferredModel, storageEnabled);
 
     const settings = dataStore.getQueueSettings(threadId);
@@ -100,19 +92,15 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     sseClient.onPartUpdated((part) => { if (part.sessionID === sessionId) accumulatedText = part.text; });
     sseClient.onSessionIdle((idleSessionId) => {
       if (idleSessionId !== sessionId || !promptSent) return;
-      if (updateInterval) { clearInterval(updateInterval); updateInterval = null; }
       (async () => {
         try {
           if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
-          const disabledButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder().setCustomId(`interrupt_${threadId}`).setLabel('⏸️ Interrupt').setStyle(ButtonStyle.Secondary).setDisabled(true)
-          );
           if (!accumulatedText.trim()) {
-            const edited = await updateStreamMessage('⚠️ No output received — the model may have encountered an issue.', [disabledButtons]);
+            const edited = await updateStreamMessage('⚠️ No output received — the model may have encountered an issue.');
             if (!edited) await safeSend('⚠️ No output received — the model may have encountered an issue.');
           } else {
             const result = formatOutputForMobile(accumulatedText);
-            const editSuccess = await updateStreamMessage(result.chunks[0], [disabledButtons]);
+            const editSuccess = await updateStreamMessage(result.chunks[0]);
             const startIndex = editSuccess ? 1 : 0;
             for (let i = startIndex; i < result.chunks.length; i++) await safeSend(result.chunks[i]);
           }
@@ -129,10 +117,9 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     sseClient.onSessionError((errorSessionId, errorInfo) => {
       if (errorSessionId !== sessionId || !promptSent) return;
       hasSessionError = true;
-      if (updateInterval) { clearInterval(updateInterval); updateInterval = null; }
       (async () => {
         const errorMsg = errorInfo.data?.message || errorInfo.name || 'Unknown error';
-        const edited = await updateStreamMessage(`❌ **Error**: ${errorMsg}`, []);
+        const edited = await updateStreamMessage(`❌ **Error**: ${errorMsg}`);
         if (!edited) await safeSend(`❌ **Error**: ${errorMsg}`);
         sseClient.disconnect(); sessionManager.clearSseClient(threadId);
         const settings = dataStore.getQueueSettings(threadId);
@@ -142,9 +129,8 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
     });
 
     sseClient.onError((error) => {
-      if (updateInterval) { clearInterval(updateInterval); updateInterval = null; }
       (async () => {
-        const edited = await updateStreamMessage(`❌ Connection error: ${error.message}`, []);
+        const edited = await updateStreamMessage(`❌ Connection error: ${error.message}`);
         if (!edited) await safeSend(`❌ Connection error: ${error.message}`);
         sseClient.disconnect(); sessionManager.clearSseClient(threadId);
         const settings = dataStore.getQueueSettings(threadId);
@@ -153,26 +139,11 @@ export async function runPrompt(channel: TextBasedChannel, threadId: string, pro
       })().catch(console.error);
     });
 
-    updateInterval = setInterval(async () => {
-      tick++;
-      try {
-        const formatted = formatOutput(accumulatedText);
-        const spinnerChar = spinner[tick % spinner.length];
-        const newContent = formatted || '';
-        if (newContent !== lastContent || tick % 2 === 0) {
-          lastContent = newContent;
-          await updateStreamMessage(newContent || `${spinnerChar} **Running...**`, [buttons]);
-        }
-      } catch (error) { console.error('Error in stream update interval:', error instanceof Error ? error.message : error); }
-    }, 1000);
-
-    await updateStreamMessage('⠦ **Running...**', [buttons]);
     await sessionManager.sendPrompt(port, sessionId, prompt, preferredModel);
     promptSent = true;
   } catch (error) {
-    if (updateInterval) clearInterval(updateInterval);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    const edited = await updateStreamMessage(`❌ OpenCode execution failed: ${errorMessage}`, []);
+    const edited = await updateStreamMessage(`❌ OpenCode execution failed: ${errorMessage}`);
     if (!edited) await safeSend(`❌ OpenCode execution failed: ${errorMessage}`);
     const client = sessionManager.getSseClient(threadId);
     if (client) { client.disconnect(); sessionManager.clearSseClient(threadId); }
