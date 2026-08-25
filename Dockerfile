@@ -17,8 +17,9 @@ RUN npm run build
 # Stage 3: Production
 FROM node:22-alpine AS production
 
-# Install tini for proper signal handling
-RUN apk add --no-cache tini
+# Install tini and OpenCode CLI
+RUN apk add --no-cache tini \
+    && npm install -g opencode-ai@1.18.23
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
