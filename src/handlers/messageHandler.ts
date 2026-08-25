@@ -33,7 +33,7 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   if (isBusy(conversationId)) {
     if (voiceAttachment) dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
     else dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
-    await safeReact(message, '📥');
+    // Queued messages are intentionally silent. No acknowledgement reaction is added.
     return;
   }
 
