@@ -10,7 +10,6 @@ async function safeReact(message: Message, emoji: string): Promise<void> {
   try { await message.react(emoji); }
   catch (error) { console.error(`[Voice STT] Failed to react with ${emoji}:`, error instanceof Error ? error.message : error); }
 }
-
 async function safeRemoveReaction(message: Message, emoji: string): Promise<void> {
   try { await message.reactions.cache.get(emoji)?.users.remove(message.client.user!.id); }
   catch (error) { console.error(`[Voice STT] Failed to remove reaction ${emoji}:`, error instanceof Error ? error.message : error); }
@@ -19,34 +18,21 @@ async function safeRemoveReaction(message: Message, emoji: string): Promise<void
 export async function handleMessageCreate(message: Message): Promise<void> {
   if (message.author.bot || message.system) return;
   if (!isAuthorized(message.author.id)) return;
-
   const conversationId = message.channel.id;
-
-  // Chat is opt-in per channel/thread. Once activated, normal messages work
-  // without /prompt and without mentioning the bot.
   if (!activation.isActive(conversationId)) return;
 
   let prompt = message.content.trim();
   const isVoiceMessage = !prompt && isVoiceEnabled() && message.flags.has(MessageFlags.IsVoiceMessage);
   const voiceAttachment = isVoiceMessage ? message.attachments.first() : undefined;
-
   if (!prompt && !voiceAttachment) return;
 
   if (message.client.user) {
-    prompt = prompt
-      .replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '')
-      .trim();
+    prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
   }
 
   if (isBusy(conversationId)) {
-    if (voiceAttachment) {
-      dataStore.addToQueue(conversationId, {
-        prompt: '', userId: message.author.id, timestamp: Date.now(),
-        voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size,
-      });
-    } else {
-      dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
-    }
+    if (voiceAttachment) dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
+    else dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
     await safeReact(message, '📥');
     return;
   }
@@ -59,17 +45,12 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     } catch (error) {
       console.error('[Voice STT] Transcription failed:', error instanceof Error ? error.message : error);
       await safeReact(message, '❌');
-      await message.reply({ content: error instanceof Error && error.message === 'AUTH_FAILURE'
-        ? '❌ Transcription failed. Check the voice API key with `/voice status`.'
-        : '❌ Voice transcription failed. Check server logs.' }).catch(() => {});
+      await message.reply({ content: error instanceof Error && error.message === 'AUTH_FAILURE' ? '❌ Transcription failed. Check the voice API key with `/voice status`.' : '❌ Voice transcription failed. Check server logs.' }).catch(() => {});
       return;
     }
     if (!prompt.trim()) { await safeReact(message, '❌'); return; }
   }
 
-  const parentChannelId = message.channel.isThread()
-    ? (message.channel.parentId ?? conversationId)
-    : conversationId;
-
-  await runPrompt(message.channel, conversationId, prompt, parentChannelId);
+  const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
+  await runPrompt(message.channel, conversationId, prompt, parentChannelId, message.author.id);
 }
