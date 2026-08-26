@@ -1,4 +1,4 @@
-const MAX_ENUMERATION_COUNT = 9_999;
+const MAX_ENUMERATION_COUNT = 1_000;
 const ENUMERATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type EnumerationState = {
@@ -57,9 +57,9 @@ function extractEnumerationRange(prompt: string): EnumerationRange | null {
 }
 
 /**
- * Checks a prompt against the 9,999 enumeration ceiling and remembers
+ * Checks a prompt against the 1,000 enumeration ceiling and remembers
  * enumeration ranges per user/conversation. This prevents bypasses such as
- * asking for 1-5,000 and then 5,001-10,000 in separate messages.
+ * asking for 1-500 and then 501-1,000 in separate messages.
  */
 export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global'): boolean {
   const range = extractEnumerationRange(prompt);
@@ -101,4 +101,4 @@ export function clearEnumerationState(scopeKey: string): void {
 }
 
 export const EXCESSIVE_ENUMERATION_MESSAGE =
-  '🛑 That enumeration is too large. I can count or list up to **9,999 items total**, including segmented requests.';
+  '🛑 That enumeration is too large. I can count or list up to **1,000 items total**, including segmented requests.';
