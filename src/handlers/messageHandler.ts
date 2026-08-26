@@ -5,6 +5,7 @@ import { isBusy } from '../services/queueManager.js';
 import { isAuthorized } from '../services/configStore.js';
 import { transcribe, isVoiceEnabled } from '../services/voiceService.js';
 import * as activation from '../services/activationService.js';
+import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE } from '../utils/requestGuard.js';
 
 async function safeReact(message: Message, emoji: string): Promise<void> {
   try { await message.react(emoji); }
@@ -33,6 +34,11 @@ export async function handleMessageCreate(message: Message): Promise<void> {
 
   if (message.client.user) {
     prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
+  }
+
+  if (prompt && isExcessiveEnumerationRequest(prompt)) {
+    await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
+    return;
   }
 
   if (isBusy(conversationId)) {
