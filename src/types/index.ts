@@ -22,6 +22,7 @@ export interface UserPersonality {
 export interface DataStore {
   projects: ProjectConfig[];
   bindings: ChannelBinding[];
+  channelModels?: Record<string, string>;
   userPersonalities?: UserPersonality[];
   threadSessions?: ThreadSession[];
   worktreeMappings?: WorktreeMapping[];
@@ -78,8 +79,8 @@ export interface WorktreeMapping {
   threadId: string;
   branchName: string;
   worktreePath: string;
-  projectPath: string;
   description: string;
+  projectPath: string;
   createdAt: number;
 }
 
