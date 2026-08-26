@@ -5,7 +5,8 @@ import { isBusy } from '../services/queueManager.js';
 import { isAuthorized } from '../services/configStore.js';
 import { transcribe, isVoiceEnabled } from '../services/voiceService.js';
 import * as activation from '../services/activationService.js';
-import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE } from '../utils/requestGuard.js';
+import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE, applyAIEnumerationClassification, getEnumerationMaxRequested } from '../utils/requestGuard.js';
+import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
 
 async function safeReact(message: Message, emoji: string): Promise<void> {
   try { await message.react(emoji); }
@@ -22,9 +23,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   const conversationId = message.channel.id;
   const enumerationScope = `${message.author.id}:${conversationId}`;
 
-  // DMs (including User Install DMs) start active by default. /deactivate
-  // stores an explicit false value, so the user can still turn DM activity off.
-  // Guild channels retain the normal opt-in activation flow.
   const defaultActive = !message.guildId;
   if (!activation.isActive(conversationId, defaultActive)) return;
 
@@ -37,9 +35,29 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
   }
 
-  if (prompt && isExcessiveEnumerationRequest(prompt, enumerationScope)) {
-    await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
-    return;
+  if (prompt) {
+    // Deterministic guard first: zero API cost and authoritative hard limit.
+    if (isExcessiveEnumerationRequest(prompt, enumerationScope)) {
+      await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
+      return;
+    }
+
+    // AI fallback catches natural-language variants the parser cannot safely
+    // recognize. It is only called for likely repetitive/counting prompts or
+    // while an enumeration is already active.
+    const previousMaxRequested = getEnumerationMaxRequested(enumerationScope);
+    const looksPotentiallyEnumerative = previousMaxRequested > 0 ||
+      /\b(?:count|counting|enumerat|list|number|numbers|items?|add|another|more|continue|keep going|print|output|generate)\b/i.test(prompt);
+
+    if (looksPotentiallyEnumerative) {
+      const classification = await classifyEnumerationRequest(prompt, previousMaxRequested);
+      if (classification?.isEnumeration && classification.confidence >= 0.75 && classification.requestedCount !== null) {
+        if (applyAIEnumerationClassification(enumerationScope, classification.requestedCount, classification.isContinuation)) {
+          await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
+          return;
+        }
+      }
+    }
   }
 
   if (isBusy(conversationId)) {
