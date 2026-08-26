@@ -46,10 +46,6 @@ function extractEnumerationRange(prompt: string, previous?: EnumerationState): E
 
   if (!enumerationVerb.test(text)) {
     if (!previous) return null;
-
-    // Once enumeration mode is active, continuation wording is deliberately
-    // conservative. This catches both digits and English words, including
-    // "add two hundred more" and "add two hundred".
     if (previous.maxRequested >= MAX_ENUMERATION_COUNT && /\b(?:more|another|continue|add)\b/i.test(text)) {
       return { start: previous.maxRequested + 1, end: MAX_ENUMERATION_COUNT + 1, count: 2 };
     }
@@ -65,7 +61,6 @@ function extractEnumerationRange(prompt: string, previous?: EnumerationState): E
       }
     }
 
-    // Also catch "add two hundred" / "add 200" without the word "more".
     const addOnly = text.match(/^add\s+(?:another\s+)?([\w ,_-]+?)(?:\s+(?:numbers?|items?|values?))?\s*[.!?]?$/i);
     if (addOnly?.[1]) {
       const count = parseCount(addOnly[1]);
@@ -115,6 +110,48 @@ export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global
   if (mergedCoverage > MAX_ENUMERATION_COUNT) return true;
   enumerationState.set(scopeKey, { startedAt: activePrevious.startedAt, maxRequested: Math.max(activePrevious.maxRequested, range.end), coveredItems: mergedCoverage });
   return false;
+}
+
+/** Apply a model classification when regexes cannot confidently recognize the wording. */
+export function applyAIEnumerationClassification(
+  scopeKey: string,
+  requestedCount: number,
+  isContinuation: boolean,
+): boolean {
+  if (!Number.isFinite(requestedCount) || requestedCount <= 0) return false;
+  const now = Date.now();
+  const previous = enumerationState.get(scopeKey);
+  const activePrevious = previous && now - previous.startedAt <= ENUMERATION_WINDOW_MS ? previous : undefined;
+
+  if (!activePrevious) {
+    if (requestedCount > MAX_ENUMERATION_COUNT) return true;
+    enumerationState.set(scopeKey, {
+      startedAt: now,
+      maxRequested: isContinuation ? requestedCount : requestedCount,
+      coveredItems: requestedCount,
+    });
+    return false;
+  }
+
+  const nextMax = isContinuation ? activePrevious.maxRequested + requestedCount : Math.max(activePrevious.maxRequested, requestedCount);
+  const mergedCoverage = isContinuation
+    ? Math.max(activePrevious.coveredItems, nextMax)
+    : activePrevious.coveredItems + requestedCount;
+
+  if (requestedCount > MAX_ENUMERATION_COUNT || nextMax > MAX_ENUMERATION_COUNT || mergedCoverage > MAX_ENUMERATION_COUNT) return true;
+
+  enumerationState.set(scopeKey, {
+    startedAt: activePrevious.startedAt,
+    maxRequested: nextMax,
+    coveredItems: mergedCoverage,
+  });
+  return false;
+}
+
+export function getEnumerationMaxRequested(scopeKey: string): number {
+  const state = enumerationState.get(scopeKey);
+  if (!state || Date.now() - state.startedAt > ENUMERATION_WINDOW_MS) return 0;
+  return state.maxRequested;
 }
 
 export function clearEnumerationState(scopeKey: string): void { enumerationState.delete(scopeKey); }
