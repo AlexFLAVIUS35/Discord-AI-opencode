@@ -3,6 +3,7 @@ import { getOrCreateThread } from '../utils/threadHelper.js';
 import type { Command } from './index.js';
 import { runPrompt } from '../services/executionService.js';
 import { isBusy } from '../services/queueManager.js';
+import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE } from '../utils/requestGuard.js';
 
 export const opencode: Command = {
   data: new SlashCommandBuilder()
@@ -15,6 +16,14 @@ export const opencode: Command = {
 
   async execute(interaction: ChatInputCommandInteraction) {
     const prompt = interaction.options.getString('prompt', true);
+
+    if (isExcessiveEnumerationRequest(prompt)) {
+      await interaction.reply({
+        content: EXCESSIVE_ENUMERATION_MESSAGE,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
 
     if (interaction.channel?.isThread()) {
       await interaction.reply({
