@@ -25,10 +25,10 @@ function extractJson(text: string): EnumerationClassification | null {
 }
 
 /**
- * Uses the configured OpenAI API key only as a language-understanding fallback.
- * The deterministic 1,000-item guard remains authoritative; this classifier
- * exists to catch natural-language variants such as "add two hundred" that
- * are difficult to enumerate safely with regexes alone.
+ * Uses the configured OpenAI API key as the intent/context classifier.
+ * The classifier decides whether a request is a fresh enumeration or a
+ * continuation. Deterministic code remains authoritative only for the final
+ * 1,000-item safety limit.
  */
 export async function classifyEnumerationRequest(
   prompt: string,
@@ -40,10 +40,14 @@ export async function classifyEnumerationRequest(
   const system = [
     'You are a strict safety classifier for a Discord bot.',
     'Determine whether the user is asking the bot to enumerate, count, list, print, generate, or continue a repetitive sequence of numbered/items output.',
-    'Treat natural language as equivalent to numeric language: "two hundred" means 200, "one thousand" means 1000, "add two hundred", "another fifty", "200 more", and "keep counting" are continuation requests when prior enumeration exists.',
+    'Treat natural language as equivalent to numeric language: "two hundred" means 200, "one thousand" means 1000, "add two hundred", "another fifty", "200 more", and "keep counting" can be continuation requests.',
+    'Use the wording and context to decide whether the request is a fresh task or a continuation. Do NOT assume every new "count to X" is a continuation merely because an earlier enumeration exists.',
+    'After "count to 400", "count to 10" is a fresh request for 10 items, while "add another 500" is a continuation for 500 additional items.',
+    'If the user explicitly asks to continue, add more, go on, keep counting, or otherwise extend the existing sequence, set isContinuation=true.',
+    'For a fresh explicit endpoint such as "count to 500", requestedCount is 500 and isContinuation=false.',
+    'For a continuation such as "add another 200", requestedCount is 200 and isContinuation=true.',
     'Do not judge whether the task is useful. Only classify the request.',
     'Return ONLY JSON with keys: isEnumeration (boolean), requestedCount (number|null), isContinuation (boolean), confidence (0..1).',
-    'requestedCount is the number of new items requested, not the final endpoint. For an explicit endpoint like "count to 900", use 900.',
   ].join(' ');
 
   const user = JSON.stringify({ prompt, previousMaxRequested });
