@@ -16,6 +16,43 @@ const SMALL_NUMBER_WORDS: Record<string, number> = {
   sixty: 60, seventy: 70, eighty: 80, ninety: 90,
 };
 
+function parseNumberWords(value: string): number | null {
+  const words = value.toLowerCase().replace(/-/g, ' ').split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 10) return null;
+  let total = 0;
+  let current = 0;
+  let sawNumber = false;
+  for (const word of words) {
+    if (word === 'and') continue;
+    if (SMALL_NUMBER_WORDS[word] !== undefined) {
+      current += SMALL_NUMBER_WORDS[word];
+      sawNumber = true;
+    } else if (word === 'hundred') {
+      current = Math.max(1, current) * 100;
+      sawNumber = true;
+    } else if (word === 'thousand') {
+      total += Math.max(1, current) * 1_000;
+      current = 0;
+      sawNumber = true;
+    } else if (word === 'million') {
+      total += Math.max(1, current) * 1_000_000;
+      current = 0;
+      sawNumber = true;
+    } else if (word === 'billion') {
+      total += Math.max(1, current) * 1_000_000_000;
+      current = 0;
+      sawNumber = true;
+    } else if (word === 'trillion') {
+      total += Math.max(1, current) * 1_000_000_000_000;
+      current = 0;
+      sawNumber = true;
+    } else {
+      return null;
+    }
+  }
+  return sawNumber ? total + current : null;
+}
+
 function parseCount(value: string): number | null {
   const normalized = value.toLowerCase().replace(/,/g, '').replace(/_/g, '').trim();
   const match = normalized.match(/^(\d+(?:\.\d+)?)(k|m|million|b|billion|t|trillion)?$/);
@@ -30,39 +67,6 @@ function parseCount(value: string): number | null {
   return amount * multiplier;
 }
 
-function parseNumberWords(value: string): number | null {
-  const words = value.replace(/-/g, ' ').split(/\s+/).filter(Boolean);
-  if (!words.length || words.length > 8) return null;
-  let total = 0;
-  let current = 0;
-  let sawNumber = false;
-  for (const word of words) {
-    if (word === 'and') continue;
-    if (SMALL_NUMBER_WORDS[word] !== undefined) {
-      current += SMALL_NUMBER_WORDS[word];
-      sawNumber = true;
-    } else if (word === 'hundred') {
-      current = Math.max(1, current) * 100;
-      sawNumber = true;
-    } else if (word === 'thousand') {
-      total += Math.max(1, current) * 1000;
-      current = 0;
-      sawNumber = true;
-    } else if (word === 'million') {
-      total += Math.max(1, current) * 1_000_000;
-      current = 0;
-      sawNumber = true;
-    } else if (word === 'billion') {
-      total += Math.max(1, current) * 1_000_000_000;
-      current = 0;
-      sawNumber = true;
-    } else {
-      return null;
-    }
-  }
-  return sawNumber ? total + current : null;
-}
-
 type EnumerationRange = { start: number; end: number; count: number };
 
 function extractEnumerationRange(prompt: string, previous?: EnumerationState): EnumerationRange | null {
@@ -72,11 +76,11 @@ function extractEnumerationRange(prompt: string, previous?: EnumerationState): E
   if (!enumerationVerb.test(text)) {
     if (!previous) return null;
 
-    // Natural continuation language, including "add one more", "add two more",
-    // "another 50", "continue for 200", etc. Once enumeration mode is active,
-    // treat these as additional requested items instead of unrelated prose.
+    // Continuations must understand both digits and English number words:
+    // "another 50", "another fifty", "add one more", "another two hundred", etc.
     const more = text.match(/\b(?:add|do|give|continue|print|output|write|list|count)\s+(?:another\s+)?([\w ,_-]+?)\s+more\b/i)
-      ?? text.match(/\banother\s+([\w ,_-]+?)\s+(?:numbers?|items?|values?)\b/i)
+      ?? text.match(/\banother\s+([\w ,_-]+?)(?:\s+(?:numbers?|items?|values?))?\s*$/i)
+      ?? text.match(/\banother\s+([\w ,_-]+?)\s+more\b/i)
       ?? text.match(/\b([\w ,_-]+?)\s+more\b/i);
 
     if (more?.[1]) {
@@ -87,7 +91,6 @@ function extractEnumerationRange(prompt: string, previous?: EnumerationState): E
       }
     }
 
-    // "one more", "two more", "five more" without a leading verb.
     const bareMore = text.match(/^([\w -]+)\s+more$/i);
     if (bareMore) {
       const count = parseCount(bareMore[1]);
