@@ -9,10 +9,17 @@ type EnumerationState = {
 
 const enumerationState = new Map<string, EnumerationState>();
 
+const SMALL_NUMBER_WORDS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+  sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+};
+
 function parseCount(value: string): number | null {
   const normalized = value.toLowerCase().replace(/,/g, '').replace(/_/g, '').trim();
   const match = normalized.match(/^(\d+(?:\.\d+)?)(k|m|million|b|billion|t|trillion)?$/);
-  if (!match) return null;
+  if (!match) return parseNumberWords(normalized);
   const amount = Number(match[1]);
   if (!Number.isFinite(amount)) return null;
   const multiplier = {
@@ -23,63 +30,101 @@ function parseCount(value: string): number | null {
   return amount * multiplier;
 }
 
+function parseNumberWords(value: string): number | null {
+  const words = value.replace(/-/g, ' ').split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 8) return null;
+  let total = 0;
+  let current = 0;
+  let sawNumber = false;
+  for (const word of words) {
+    if (word === 'and') continue;
+    if (SMALL_NUMBER_WORDS[word] !== undefined) {
+      current += SMALL_NUMBER_WORDS[word];
+      sawNumber = true;
+    } else if (word === 'hundred') {
+      current = Math.max(1, current) * 100;
+      sawNumber = true;
+    } else if (word === 'thousand') {
+      total += Math.max(1, current) * 1000;
+      current = 0;
+      sawNumber = true;
+    } else if (word === 'million') {
+      total += Math.max(1, current) * 1_000_000;
+      current = 0;
+      sawNumber = true;
+    } else if (word === 'billion') {
+      total += Math.max(1, current) * 1_000_000_000;
+      current = 0;
+      sawNumber = true;
+    } else {
+      return null;
+    }
+  }
+  return sawNumber ? total + current : null;
+}
+
 type EnumerationRange = { start: number; end: number; count: number };
 
 function extractEnumerationRange(prompt: string, previous?: EnumerationState): EnumerationRange | null {
   const text = prompt.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!/\b(?:count|counting|enumerate|enumerating|list|write|print|output|generate)\b/.test(text)) {
-    // Continuation language such as "add 200 more" or "another 200" is only
-    // considered an enumeration request when this conversation already has an
-    // active enumeration. This prevents normal requests containing "200 more"
-    // from being blocked while closing the segmented-request loophole.
-    if (previous) {
-      const more = text.match(/\b(?:add|do|give|continue|print|output|write|list|count)\s+(?:another\s+)?([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\s+more\b/i)
-        ?? text.match(/\banother\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\b/i)
-        ?? text.match(/\b([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\s+more\b/i);
-      if (more?.[1]) {
-        const count = parseCount(more[1]);
-        if (count !== null && count > 0) {
-          const start = previous.maxRequested + 1;
-          return { start, end: start + count - 1, count };
-        }
+  const enumerationVerb = /\b(?:count|counting|enumerate|enumerating|list|write|print|output|generate)\b/;
+
+  if (!enumerationVerb.test(text)) {
+    if (!previous) return null;
+
+    // Natural continuation language, including "add one more", "add two more",
+    // "another 50", "continue for 200", etc. Once enumeration mode is active,
+    // treat these as additional requested items instead of unrelated prose.
+    const more = text.match(/\b(?:add|do|give|continue|print|output|write|list|count)\s+(?:another\s+)?([\w ,_-]+?)\s+more\b/i)
+      ?? text.match(/\banother\s+([\w ,_-]+?)\s+(?:numbers?|items?|values?)\b/i)
+      ?? text.match(/\b([\w ,_-]+?)\s+more\b/i);
+
+    if (more?.[1]) {
+      const count = parseCount(more[1]);
+      if (count !== null && count > 0) {
+        const start = previous.maxRequested + 1;
+        return { start, end: start + count - 1, count };
+      }
+    }
+
+    // "one more", "two more", "five more" without a leading verb.
+    const bareMore = text.match(/^([\w -]+)\s+more$/i);
+    if (bareMore) {
+      const count = parseCount(bareMore[1]);
+      if (count !== null && count > 0) {
+        const start = previous.maxRequested + 1;
+        return { start, end: start + count - 1, count };
       }
     }
     return null;
   }
 
-  const direct = text.match(/\b(?:count|enumerate|list|write|print|output|generate)(?:\s+\w+){0,5}\s+(?:to|through|until|up\s+to)\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)/i);
+  const direct = text.match(/\b(?:count|enumerate|list|write|print|output|generate)(?:\s+\w+){0,5}\s+(?:to|through|until|up\s+to)\s+([\w,_ -]+?)(?=\s*(?:[.!?]|$))/i);
   if (direct?.[1]) {
     const end = parseCount(direct[1]);
     if (end !== null) return { start: 1, end, count: Math.max(0, end) };
   }
 
-  const range = text.match(/\b(?:count|enumerate|list|write|print|output|generate)(?:\s+\w+){0,8}\s+from\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\s+(?:to|through|until)\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)/i);
+  const range = text.match(/\b(?:count|enumerate|list|write|print|output|generate)(?:\s+\w+){0,8}\s+from\s+([\w,_ -]+?)\s+(?:to|through|until)\s+([\w,_ -]+?)(?=\s*(?:[.!?]|$))/i);
   if (range?.[1] && range[2]) {
     const start = parseCount(range[1]);
     const end = parseCount(range[2]);
     if (start !== null && end !== null) return { start, end, count: Math.max(0, end - start + 1) };
   }
 
-  const every = text.match(/\b(?:every|all)\s+(?:number|integer)s?\s+(?:from|between)\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\s+(?:to|and)\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)/i);
+  const every = text.match(/\b(?:every|all)\s+(?:number|integer)s?\s+(?:from|between)\s+([\w,_ -]+?)\s+(?:to|and)\s+([\w,_ -]+?)(?=\s*(?:[.!?]|$))/i);
   if (every?.[1] && every[2]) {
     const start = parseCount(every[1]);
     const end = parseCount(every[2]);
     if (start !== null && end !== null) return { start, end, count: Math.max(0, end - start + 1) };
   }
 
-  // Explicit large enumeration language without a numeric endpoint.
   if (/\b(?:count|enumerate|list|write|print|output|generate)\b[\s\S]{0,80}\b(?:ten\s+thousand|hundred\s+thousand|million|billion|trillion)\b/i.test(text)) {
     return { start: 1, end: MAX_ENUMERATION_COUNT + 1, count: MAX_ENUMERATION_COUNT + 1 };
   }
   return null;
 }
 
-/**
- * Checks a prompt against the 1,000 enumeration ceiling and remembers
- * enumeration ranges per user/conversation. This prevents bypasses such as
- * asking for 1-500 and then 501-1,000 in separate messages, including natural
- * continuation requests such as "add 200 more".
- */
 export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global'): boolean {
   const now = Date.now();
   const previous = enumerationState.get(scopeKey);
@@ -98,9 +143,6 @@ export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global
     return false;
   }
 
-  // Reject a new segment if the requested ranges extend the same enumeration
-  // past the ceiling. Also reject contiguous continuation of the same sequence
-  // once its cumulative coverage reaches the limit.
   const isContinuation = range.start <= activePrevious.maxRequested + 1 && range.end >= activePrevious.maxRequested;
   const mergedCoverage = isContinuation
     ? Math.max(activePrevious.maxRequested, range.end) - Math.min(1, range.start) + 1
