@@ -68,11 +68,23 @@ export function setChannelBinding(channelId: string, projectAlias: string, model
   saveData(data);
 }
 export function setChannelModel(channelId: string, model: string): boolean {
-  const data = loadData(); const existing = data.bindings.findIndex(b => b.channelId === channelId);
-  if (existing >= 0) { data.bindings[existing].model = sanitizeModel(model); saveData(data); return true; }
-  return false;
+  const data = loadData();
+  const cleanModel = sanitizeModel(model);
+  const existing = data.bindings.findIndex(b => b.channelId === channelId);
+  if (existing >= 0) {
+    data.bindings[existing].model = cleanModel;
+    saveData(data);
+    return true;
+  }
+  if (!data.channelModels) data.channelModels = {};
+  data.channelModels[channelId] = cleanModel;
+  saveData(data);
+  return true;
 }
-export function getChannelModel(channelId: string): string | undefined { return sanitizeModel(loadData().bindings.find(b => b.channelId === channelId)?.model ?? ''); }
+export function getChannelModel(channelId: string): string | undefined {
+  const data = loadData();
+  return sanitizeModel(data.bindings.find(b => b.channelId === channelId)?.model ?? data.channelModels?.[channelId] ?? '');
+}
 export function getChannelBinding(channelId: string): string | undefined { return loadData().bindings.find(b => b.channelId === channelId)?.projectAlias; }
 export function getChannelProjectPath(channelId: string): string | undefined { const alias = getChannelBinding(channelId); return alias ? getProject(alias)?.path : undefined; }
 
