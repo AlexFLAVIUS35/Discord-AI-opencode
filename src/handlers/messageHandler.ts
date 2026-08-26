@@ -20,6 +20,7 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   if (message.author.bot || message.system) return;
   if (!isAuthorized(message.author.id)) return;
   const conversationId = message.channel.id;
+  const enumerationScope = `${message.author.id}:${conversationId}`;
 
   // DMs (including User Install DMs) start active by default. /deactivate
   // stores an explicit false value, so the user can still turn DM activity off.
@@ -36,7 +37,7 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
   }
 
-  if (prompt && isExcessiveEnumerationRequest(prompt)) {
+  if (prompt && isExcessiveEnumerationRequest(prompt, enumerationScope)) {
     await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
     return;
   }
@@ -44,7 +45,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   if (isBusy(conversationId)) {
     if (voiceAttachment) dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
     else dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
-    // Queued messages are intentionally silent. No acknowledgement reaction is added.
     return;
   }
 
