@@ -61,9 +61,40 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
   try { if (channel) await (channel as any).sendTyping(); } catch { }
 
   let port: number; let sessionId: string; let accumulatedText = ''; let promptSent = false; let hasSessionError = false; let responseHandled = false;
+  let runningIndicator: Message | null = null;
+  let runningIndicatorInterval: NodeJS.Timeout | null = null;
+
+  const startRunningIndicator = async (): Promise<void> => {
+    if (!channel) return;
+    try {
+      runningIndicator = await (channel as any).send('⠋');
+      const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      let tick = 0;
+      runningIndicatorInterval = setInterval(() => {
+        if (!runningIndicator) return;
+        const frame = spinner[tick++ % spinner.length];
+        runningIndicator.edit({ content: frame }).catch(() => {});
+      }, 700);
+    } catch (error) {
+      console.error('Failed to start running indicator:', error instanceof Error ? error.message : error);
+    }
+  };
+
+  const stopRunningIndicator = async (): Promise<void> => {
+    if (runningIndicatorInterval) {
+      clearInterval(runningIndicatorInterval);
+      runningIndicatorInterval = null;
+    }
+    if (runningIndicator) {
+      const indicator = runningIndicator;
+      runningIndicator = null;
+      await indicator.delete().catch(() => {});
+    }
+  };
 
   const sendOutput = async (content: string): Promise<boolean> => {
     try {
+      await stopRunningIndicator();
       if (interaction) {
         if (!interaction.replied && !interaction.deferred) {
           await interaction.reply({ content });
@@ -88,6 +119,7 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
   };
 
   try {
+    await startRunningIndicator();
     port = await serveManager.spawnServe(effectivePath, preferredModel, storageEnabled);
     await serveManager.waitForReady(port, 30000, effectivePath, preferredModel, storageEnabled);
     const settings = dataStore.getQueueSettings(threadId);
@@ -100,29 +132,31 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
       responseHandled = true;
       (async () => {
         try {
-          if (hasSessionError) { sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
+          if (hasSessionError) { await stopRunningIndicator(); sseClient.disconnect(); sessionManager.clearSseClient(threadId); return; }
           if (!accumulatedText.trim()) await sendOutput('⚠️ No output received — the model may have encountered an issue.');
           else {
             const reactedText = channel ? await processAiReactions(channel, accumulatedText) : accumulatedText.replace(/\[react:([^\]\r\n]{1,64})\]/gu, '').trim();
             if (reactedText) {
               const result = formatOutputForMobile(reactedText);
               for (const chunk of result.chunks) await sendOutput(chunk);
+            } else {
+              await stopRunningIndicator();
             }
           }
           sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue();
-        } catch (error) { console.error('Error in onSessionIdle:', error); }
+        } catch (error) { await stopRunningIndicator(); console.error('Error in onSessionIdle:', error); }
       })();
     });
     sseClient.onSessionError((errorSessionId, errorInfo) => {
       if (errorSessionId !== sessionId || !promptSent || responseHandled) return; hasSessionError = true; responseHandled = true;
       console.error('OpenCode session error:', errorInfo);
-      (async () => { sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((error) => console.error('Error continuing after session error:', error));
+      (async () => { await stopRunningIndicator(); sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((error) => console.error('Error continuing after session error:', error));
     });
     sseClient.onError((error) => {
       if (responseHandled) return;
       responseHandled = true;
       console.error('OpenCode SSE connection error:', error);
-      (async () => { sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((queueError) => console.error('Error continuing after SSE error:', queueError));
+      (async () => { await stopRunningIndicator(); sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((queueError) => console.error('Error continuing after SSE error:', queueError));
     });
 
     const personality = userId ? dataStore.getUserPersonality(userId) : undefined;
@@ -133,6 +167,7 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
     await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
     promptSent = true;
   } catch (error) {
+    await stopRunningIndicator();
     console.error('OpenCode execution failed:', error);
     const client = sessionManager.getSseClient(threadId); if (client) { client.disconnect(); sessionManager.clearSseClient(threadId); }
     await continueQueue();
