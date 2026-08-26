@@ -3,6 +3,7 @@ import * as dataStore from './dataStore.js';
 import { runPrompt } from './executionService.js';
 import * as sessionManager from './sessionManager.js';
 import { transcribe } from './voiceService.js';
+import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE } from '../utils/requestGuard.js';
 
 export async function processNextInQueue(channel: TextBasedChannel, threadId: string, parentChannelId: string): Promise<void> {
   const settings = dataStore.getQueueSettings(threadId);
@@ -22,6 +23,13 @@ export async function processNextInQueue(channel: TextBasedChannel, threadId: st
     }
   }
   if (!prompt) return;
+
+  if (isExcessiveEnumerationRequest(prompt)) {
+    try { await (channel as any).send(EXCESSIVE_ENUMERATION_MESSAGE); } catch { }
+    await processNextInQueue(channel, threadId, parentChannelId);
+    return;
+  }
+
   // Queue transitions are intentionally silent. The next task starts naturally.
   await runPrompt(channel, threadId, prompt, parentChannelId, next.userId);
 }
