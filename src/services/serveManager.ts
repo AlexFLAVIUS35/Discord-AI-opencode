@@ -44,8 +44,17 @@ function getPermissionConfig(storageEnabled: boolean): string {
   const permission = storageEnabled ? { "*": "deny", read: "allow", edit: "allow", glob: "allow", grep: "allow", list: "allow", external_directory: "deny", bash: "deny", task: "deny", skill: "deny", lsp: "deny", question: "deny", webfetch: "deny", websearch: "deny" } : { "*": "deny" };
   return JSON.stringify({ "$schema": "https://opencode.ai/config.json", permission });
 }
-export async function spawnServe(projectPath: string, model?: string, storageEnabled = false): Promise<number> {
-  const key = `${projectPath}:${model ?? "default"}:${storageEnabled ? "storage" : "chat"}`;
+
+// A project has one OpenCode server regardless of the selected model.
+// The model is a per-prompt setting, so it must never be part of the server
+// identity. Otherwise changing /model would create a different server and make
+// the existing Discord conversation/session disappear from the new server.
+function getInstanceKey(projectPath: string, storageEnabled = false): string {
+  return `${projectPath}:${storageEnabled ? "storage" : "chat"}`;
+}
+
+export async function spawnServe(projectPath: string, _model?: string, storageEnabled = false): Promise<number> {
+  const key = getInstanceKey(projectPath, storageEnabled);
   const existing = instances.get(key); if (existing && !existing.exited) return existing.port; if (existing?.exited) cleanupInstance(key);
   const port = await findAvailablePort(); const args = ["serve", "--port", port.toString()];
   const env = { ...process.env, OPENCODE_CONFIG_CONTENT: getPermissionConfig(storageEnabled) }; const command = resolveOpencodeCommand(env);
@@ -58,10 +67,10 @@ export async function spawnServe(projectPath: string, model?: string, storageEna
   child.on("error", (error) => { const inst = instances.get(key); if (!inst) return; inst.exited = true; inst.exitError = formatSpawnError(error, command, projectPath); });
   return port;
 }
-export function getPort(projectPath: string, model?: string, storageEnabled = false): number | undefined { return instances.get(`${projectPath}:${model ?? "default"}:${storageEnabled ? "storage" : "chat"}`)?.port; }
-export function stopServe(projectPath: string, model?: string, storageEnabled = false): boolean { const key = `${projectPath}:${model ?? "default"}:${storageEnabled ? "storage" : "chat"}`; const instance = instances.get(key); if (!instance) return false; instance.process.kill(); cleanupInstance(key); return true; }
-export async function waitForReady(port: number, timeout = 30000, projectPath?: string, model?: string, storageEnabled = false): Promise<void> {
-  const start = Date.now(); const url = `http://127.0.0.1:${port}/session`; const key = projectPath ? `${projectPath}:${model ?? "default"}:${storageEnabled ? "storage" : "chat"}` : null;
+export function getPort(projectPath: string, _model?: string, storageEnabled = false): number | undefined { return instances.get(getInstanceKey(projectPath, storageEnabled))?.port; }
+export function stopServe(projectPath: string, _model?: string, storageEnabled = false): boolean { const key = getInstanceKey(projectPath, storageEnabled); const instance = instances.get(key); if (!instance) return false; instance.process.kill(); cleanupInstance(key); return true; }
+export async function waitForReady(port: number, timeout = 30000, projectPath?: string, _model?: string, storageEnabled = false): Promise<void> {
+  const start = Date.now(); const url = `http://127.0.0.1:${port}/session`; const key = projectPath ? getInstanceKey(projectPath, storageEnabled) : null;
   while (Date.now() - start < timeout) {
     if (key) { const instance = instances.get(key); if (instance?.exited) { const errorMsg = instance.exitError || `opencode serve exited with code ${instance.exitCode}`; cleanupInstance(key); throw new Error(`opencode serve failed to start: ${errorMsg}`); } }
     try { const response = await fetch(url, { headers: getAuthHeaders() }); if (response.ok) return; if (response.status === 401 || response.status === 403) { const hint = isAuthEnabled() ? "credentials were rejected by the opencode server. Verify the configured server credentials." : "opencode server requires authentication but credentials are not configured."; throw new Error(`opencode serve is running on port ${port} but ${hint}`); } } catch (err) { if (err instanceof Error && err.message.startsWith("opencode serve is running on port")) throw err; }
@@ -71,4 +80,4 @@ export async function waitForReady(port: number, timeout = 30000, projectPath?: 
 }
 export function stopAll(): void { for (const [key, instance] of instances) { instance.process.kill(); cleanupInstance(key); } }
 export function getAllInstances(): Array<{ key: string; port: number }> { return Array.from(instances.entries()).map(([key, instance]) => ({ key, port: instance.port })); }
-export function getInstanceState(projectPath: string, model?: string, storageEnabled = false): { exited: boolean; exitCode?: number | null; exitError?: string } | undefined { const key = `${projectPath}:${model ?? "default"}:${storageEnabled ? "storage" : "chat"}`; const instance = instances.get(key); if (!instance) return undefined; return { exited: instance.exited ?? false, exitCode: instance.exitCode, exitError: instance.exitError }; }
+export function getInstanceState(projectPath: string, _model?: string, storageEnabled = false): { exited: boolean; exitCode?: number | null; exitError?: string } | undefined { const instance = instances.get(getInstanceKey(projectPath, storageEnabled)); if (!instance) return undefined; return { exited: instance.exited ?? false, exitCode: instance.exitCode, exitError: instance.exitError }; }
