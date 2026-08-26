@@ -105,14 +105,22 @@ export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global
     enumerationState.set(scopeKey, { startedAt: now, maxRequested: range.end, coveredItems: range.count });
     return false;
   }
-  const isContinuation = range.start <= activePrevious.maxRequested + 1 && range.end >= activePrevious.maxRequested;
-  const mergedCoverage = isContinuation ? Math.max(activePrevious.maxRequested, range.end) - Math.min(1, range.start) + 1 : activePrevious.coveredItems + range.count;
-  if (mergedCoverage > MAX_ENUMERATION_COUNT) return true;
-  enumerationState.set(scopeKey, { startedAt: activePrevious.startedAt, maxRequested: Math.max(activePrevious.maxRequested, range.end), coveredItems: mergedCoverage });
+
+  // This is only the deterministic fallback. Explicit "count to X" requests
+  // are treated as fresh when X does not extend the previous endpoint; the AI
+  // classifier is responsible for ambiguous intent before this function runs.
+  const isContinuation = range.start !== 1 || range.end > activePrevious.maxRequested;
+  const nextMax = isContinuation ? Math.max(activePrevious.maxRequested, range.end) : range.end;
+  const coveredItems = isContinuation
+    ? Math.max(activePrevious.coveredItems, nextMax)
+    : range.count;
+
+  if (nextMax > MAX_ENUMERATION_COUNT || coveredItems > MAX_ENUMERATION_COUNT) return true;
+  enumerationState.set(scopeKey, { startedAt: activePrevious.startedAt, maxRequested: nextMax, coveredItems });
   return false;
 }
 
-/** Apply a model classification when regexes cannot confidently recognize the wording. */
+/** Apply an AI classification. AI decides whether the request is fresh or a continuation. */
 export function applyAIEnumerationClassification(
   scopeKey: string,
   requestedCount: number,
@@ -127,23 +135,25 @@ export function applyAIEnumerationClassification(
     if (requestedCount > MAX_ENUMERATION_COUNT) return true;
     enumerationState.set(scopeKey, {
       startedAt: now,
-      maxRequested: isContinuation ? requestedCount : requestedCount,
+      maxRequested: requestedCount,
       coveredItems: requestedCount,
     });
     return false;
   }
 
-  const nextMax = isContinuation ? activePrevious.maxRequested + requestedCount : Math.max(activePrevious.maxRequested, requestedCount);
-  const mergedCoverage = isContinuation
-    ? Math.max(activePrevious.coveredItems, nextMax)
-    : activePrevious.coveredItems + requestedCount;
+  const resultingMax = isContinuation
+    ? activePrevious.maxRequested + requestedCount
+    : requestedCount;
+  const resultingCoverage = isContinuation
+    ? Math.max(activePrevious.coveredItems, resultingMax)
+    : requestedCount;
 
-  if (requestedCount > MAX_ENUMERATION_COUNT || nextMax > MAX_ENUMERATION_COUNT || mergedCoverage > MAX_ENUMERATION_COUNT) return true;
+  if (requestedCount > MAX_ENUMERATION_COUNT || resultingMax > MAX_ENUMERATION_COUNT || resultingCoverage > MAX_ENUMERATION_COUNT) return true;
 
   enumerationState.set(scopeKey, {
-    startedAt: activePrevious.startedAt,
-    maxRequested: nextMax,
-    coveredItems: mergedCoverage,
+    startedAt: isContinuation ? activePrevious.startedAt : now,
+    maxRequested: resultingMax,
+    coveredItems: resultingCoverage,
   });
   return false;
 }
