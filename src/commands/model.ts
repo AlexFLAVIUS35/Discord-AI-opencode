@@ -83,7 +83,6 @@ export const model: Command = {
           return;
         }
 
-        // Group models by provider
         const groups: Record<string, string[]> = {};
         for (const m of models) {
           const [provider] = m.split('/');
@@ -125,15 +124,6 @@ export const model: Command = {
     } else if (subcommand === 'set') {
       const modelName = interaction.options.getString('name', true);
       const channelId = getEffectiveChannelId(interaction);
-      
-      const projectAlias = dataStore.getChannelBinding(channelId);
-      if (!projectAlias) {
-        await interaction.reply({
-          content: '❌ No project bound to this channel. Use `/use <alias>` first.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -150,7 +140,7 @@ export const model: Command = {
       }
 
       dataStore.setChannelModel(channelId, modelName);
-      
+
       await interaction.editReply(
         `✅ Model for this channel set to \`${modelName}\`.\nSubsequent commands will use this model.`
       );
