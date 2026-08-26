@@ -36,30 +36,31 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   }
 
   if (prompt) {
-    // Snapshot before the deterministic guard. If it changes, the regex parser
-    // already understood this request and the AI must not count it twice.
-    const maxBeforeGuard = getEnumerationMaxRequested(enumerationScope);
-    if (isExcessiveEnumerationRequest(prompt, enumerationScope)) {
-      await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
-      return;
-    }
-    const maxAfterGuard = getEnumerationMaxRequested(enumerationScope);
-    const deterministicRecognized = maxAfterGuard !== maxBeforeGuard;
-
-    // AI fallback catches natural-language variants the parser cannot safely
-    // recognize. It is only called for likely repetitive/counting prompts or
-    // while an enumeration is already active.
-    const looksPotentiallyEnumerative = maxAfterGuard > 0 ||
+    const previousMaxRequested = getEnumerationMaxRequested(enumerationScope);
+    const looksPotentiallyEnumerative = previousMaxRequested > 0 ||
       /\b(?:count|counting|enumerat|list|number|numbers|items?|add|another|more|continue|keep going|print|output|generate)\b/i.test(prompt);
 
-    if (!deterministicRecognized && looksPotentiallyEnumerative) {
-      const classification = await classifyEnumerationRequest(prompt, maxAfterGuard);
+    // Let the AI decide whether this is a fresh enumeration or a continuation.
+    // The deterministic guard is only the fallback when the classifier cannot
+    // confidently interpret the wording. This prevents a fresh "count to 10"
+    // from being incorrectly added to an unrelated earlier enumeration.
+    let aiRecognized = false;
+    if (looksPotentiallyEnumerative) {
+      const classification = await classifyEnumerationRequest(prompt, previousMaxRequested);
       if (classification?.isEnumeration && classification.confidence >= 0.75 && classification.requestedCount !== null) {
+        aiRecognized = true;
         if (applyAIEnumerationClassification(enumerationScope, classification.requestedCount, classification.isContinuation)) {
           await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
           return;
         }
+      } else if (classification && !classification.isEnumeration && classification.confidence >= 0.75) {
+        aiRecognized = true;
       }
+    }
+
+    if (!aiRecognized && isExcessiveEnumerationRequest(prompt, enumerationScope)) {
+      await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {});
+      return;
     }
   }
 
