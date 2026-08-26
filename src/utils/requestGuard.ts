@@ -25,9 +25,27 @@ function parseCount(value: string): number | null {
 
 type EnumerationRange = { start: number; end: number; count: number };
 
-function extractEnumerationRange(prompt: string): EnumerationRange | null {
+function extractEnumerationRange(prompt: string, previous?: EnumerationState): EnumerationRange | null {
   const text = prompt.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!/\b(?:count|counting|enumerate|enumerating|list|write|print|output|generate)\b/.test(text)) return null;
+  if (!/\b(?:count|counting|enumerate|enumerating|list|write|print|output|generate)\b/.test(text)) {
+    // Continuation language such as "add 200 more" or "another 200" is only
+    // considered an enumeration request when this conversation already has an
+    // active enumeration. This prevents normal requests containing "200 more"
+    // from being blocked while closing the segmented-request loophole.
+    if (previous) {
+      const more = text.match(/\b(?:add|do|give|continue|print|output|write|list|count)\s+(?:another\s+)?([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\s+more\b/i)
+        ?? text.match(/\banother\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\b/i)
+        ?? text.match(/\b([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)\s+more\b/i);
+      if (more?.[1]) {
+        const count = parseCount(more[1]);
+        if (count !== null && count > 0) {
+          const start = previous.maxRequested + 1;
+          return { start, end: start + count - 1, count };
+        }
+      }
+    }
+    return null;
+  }
 
   const direct = text.match(/\b(?:count|enumerate|list|write|print|output|generate)(?:\s+\w+){0,5}\s+(?:to|through|until|up\s+to)\s+([\d,_]+(?:\.\d+)?\s*(?:k|m|b|t|million|billion|trillion)?)/i);
   if (direct?.[1]) {
@@ -59,17 +77,19 @@ function extractEnumerationRange(prompt: string): EnumerationRange | null {
 /**
  * Checks a prompt against the 1,000 enumeration ceiling and remembers
  * enumeration ranges per user/conversation. This prevents bypasses such as
- * asking for 1-500 and then 501-1,000 in separate messages.
+ * asking for 1-500 and then 501-1,000 in separate messages, including natural
+ * continuation requests such as "add 200 more".
  */
 export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global'): boolean {
-  const range = extractEnumerationRange(prompt);
+  const now = Date.now();
+  const previous = enumerationState.get(scopeKey);
+  const activePrevious = previous && now - previous.startedAt <= ENUMERATION_WINDOW_MS ? previous : undefined;
+  const range = extractEnumerationRange(prompt, activePrevious);
   if (!range) return false;
 
   if (range.count > MAX_ENUMERATION_COUNT || range.end > MAX_ENUMERATION_COUNT) return true;
 
-  const now = Date.now();
-  const previous = enumerationState.get(scopeKey);
-  if (!previous || now - previous.startedAt > ENUMERATION_WINDOW_MS) {
+  if (!activePrevious) {
     enumerationState.set(scopeKey, {
       startedAt: now,
       maxRequested: range.end,
@@ -81,16 +101,16 @@ export function isExcessiveEnumerationRequest(prompt: string, scopeKey = 'global
   // Reject a new segment if the requested ranges extend the same enumeration
   // past the ceiling. Also reject contiguous continuation of the same sequence
   // once its cumulative coverage reaches the limit.
-  const isContinuation = range.start <= previous.maxRequested + 1 && range.end >= previous.maxRequested;
+  const isContinuation = range.start <= activePrevious.maxRequested + 1 && range.end >= activePrevious.maxRequested;
   const mergedCoverage = isContinuation
-    ? Math.max(previous.maxRequested, range.end) - Math.min(1, range.start) + 1
-    : previous.coveredItems + range.count;
+    ? Math.max(activePrevious.maxRequested, range.end) - Math.min(1, range.start) + 1
+    : activePrevious.coveredItems + range.count;
 
   if (mergedCoverage > MAX_ENUMERATION_COUNT) return true;
 
   enumerationState.set(scopeKey, {
-    startedAt: previous.startedAt,
-    maxRequested: Math.max(previous.maxRequested, range.end),
+    startedAt: activePrevious.startedAt,
+    maxRequested: Math.max(activePrevious.maxRequested, range.end),
     coveredItems: mergedCoverage,
   });
   return false;
