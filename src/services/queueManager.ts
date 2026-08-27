@@ -8,30 +8,41 @@ import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE } from '..
 export async function processNextInQueue(channel: TextBasedChannel, threadId: string, parentChannelId: string): Promise<void> {
   const settings = dataStore.getQueueSettings(threadId);
   if (settings.paused) return;
-  const next = dataStore.popFromQueue(threadId);
-  if (!next) return;
-  let prompt = next.prompt;
 
-  if (!prompt && next.voiceAttachmentUrl) {
-    try {
-      prompt = await transcribe(next.voiceAttachmentUrl, next.voiceAttachmentSize);
-      if (!prompt.trim()) { await processNextInQueue(channel, threadId, parentChannelId); return; }
-    } catch (error) {
-      console.error('[Voice STT] Queued voice transcription failed:', error instanceof Error ? error.message : error);
-      await processNextInQueue(channel, threadId, parentChannelId);
-      return;
+  // Coalesce a burst of messages into ONE AI turn instead of making Leeha
+  // answer every message separately. This prevents active-channel meltdowns.
+  const first = dataStore.popFromQueue(threadId);
+  if (!first) return;
+  const pending = [first, ...dataStore.getQueue(threadId)];
+  dataStore.clearQueue(threadId);
+
+  const parts: string[] = [];
+  for (const next of pending) {
+    let prompt = next.prompt;
+
+    if (!prompt && next.voiceAttachmentUrl) {
+      try {
+        prompt = await transcribe(next.voiceAttachmentUrl, next.voiceAttachmentSize);
+        if (!prompt.trim()) continue;
+      } catch (error) {
+        console.error('[Voice STT] Queued voice transcription failed:', error instanceof Error ? error.message : error);
+        continue;
+      }
     }
-  }
-  if (!prompt) return;
+    if (!prompt) continue;
 
-  if (isExcessiveEnumerationRequest(prompt)) {
-    try { await (channel as any).send(EXCESSIVE_ENUMERATION_MESSAGE); } catch { }
-    await processNextInQueue(channel, threadId, parentChannelId);
-    return;
+    if (isExcessiveEnumerationRequest(prompt)) {
+      try { await (channel as any).send(EXCESSIVE_ENUMERATION_MESSAGE); } catch { }
+      continue;
+    }
+
+    parts.push(`[${next.userId}] ${prompt}`);
   }
 
-  // Queue transitions are intentionally silent. The next task starts naturally.
-  await runPrompt(channel, threadId, prompt, parentChannelId, next.userId);
+  if (!parts.length) return;
+
+  const combinedPrompt = `[Queued Discord messages from different users — treat each user ID as a separate person. Respond to the conversation naturally rather than producing a separate response for every message.\n${parts.join('\n')}]`;
+  await runPrompt(channel, threadId, combinedPrompt, parentChannelId, first.userId);
 }
 
 export function isBusy(threadId: string): boolean {
