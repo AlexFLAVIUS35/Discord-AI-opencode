@@ -4,6 +4,7 @@ import * as sessionManager from './sessionManager.js';
 import * as serveManager from './serveManager.js';
 import * as worktreeManager from './worktreeManager.js';
 import * as storage from './storageService.js';
+import * as guildPersonality from './guildPersonalityStore.js';
 import { SSEClient } from './sseClient.js';
 import { formatOutputForMobile } from '../utils/messageFormatter.js';
 import { processNextInQueue } from './queueManager.js';
@@ -159,10 +160,12 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
       (async () => { await stopRunningIndicator(); sseClient.disconnect(); sessionManager.clearSseClient(threadId); await continueQueue(); })().catch((queueError) => console.error('Error continuing after SSE error:', queueError));
     });
 
-    const personality = userId ? dataStore.getUserPersonality(userId) : undefined;
+    const guildId = channel && 'guildId' in channel ? ((channel as any).guildId as string | null) : null;
+    const serverPersonality = guildId ? guildPersonality.getPersonality(guildId) : undefined;
+    const personality = serverPersonality ?? (userId ? dataStore.getUserPersonality(userId) : undefined);
     const reactionInstructions = `\n\nDiscord reaction capability: You may react to the user's latest message when you genuinely feel like it. To do so, include [react:EMOJI] in your response, for example [react:😭] or [react:💀]. You can also include normal text in the same response, and you can request multiple reactions in one marker, such as [react:🥹✌️]. Each adjacent emoji is treated as a separate reaction. The marker will be hidden from the user. Do not use reactions constantly; they should be occasional and spontaneous. If you want only a reaction and no text, output only the marker. Never explain the marker.`;
     const effectivePrompt = personality
-      ? `[Permanent personality instructions for this Discord user]\n${personality}\n\n[User message]\n${prompt}${reactionInstructions}`
+      ? `[Permanent personality instructions for this Discord server/user]\n${personality}\n\n[User message]\n${prompt}${reactionInstructions}`
       : `${prompt}${reactionInstructions}`;
     await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
     promptSent = true;
