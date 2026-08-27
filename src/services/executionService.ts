@@ -96,6 +96,9 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
   };
 
   try {
+    // Give the model a short head start before showing the running animation.
+    // This keeps very fast responses from flashing a spinner unnaturally.
+    await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     await startRunningIndicator();
     port = await serveManager.spawnServe(effectivePath, preferredModel, storageEnabled);
     await serveManager.waitForReady(port, 30000, effectivePath, preferredModel, storageEnabled);
