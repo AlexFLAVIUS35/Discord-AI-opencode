@@ -5,6 +5,7 @@ import { isBusy } from '../services/queueManager.js';
 import { isAuthorized } from '../services/configStore.js';
 import { transcribe, isVoiceEnabled } from '../services/voiceService.js';
 import * as activation from '../services/activationService.js';
+import { buildDiscordContext } from '../services/discordContextService.js';
 import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE, applyAIEnumerationClassification, getEnumerationMaxRequested } from '../utils/requestGuard.js';
 import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
 
@@ -40,10 +41,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     const looksPotentiallyEnumerative = previousMaxRequested > 0 ||
       /\b(?:count|counting|enumerat|list|number|numbers|items?|add|another|more|continue|keep going|print|output|generate)\b/i.test(prompt);
 
-    // Let the AI decide whether this is a fresh enumeration or a continuation.
-    // The deterministic guard is only the fallback when the classifier cannot
-    // confidently interpret the wording. This prevents a fresh "count to 10"
-    // from being incorrectly added to an unrelated earlier enumeration.
     let aiRecognized = false;
     if (looksPotentiallyEnumerative) {
       const classification = await classifyEnumerationRequest(prompt, previousMaxRequested);
@@ -85,5 +82,14 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   }
 
   const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
-  await runPrompt(message.channel, conversationId, prompt, parentChannelId, message.author.id);
+
+  // Give the single active OpenCode conversation an explicit snapshot of the
+  // Discord conversation so different users, replies, and reactions remain
+  // distinguishable even though the OpenCode session is shared by the channel.
+  const discordContext = await buildDiscordContext(message);
+  const contextualPrompt = discordContext
+    ? `${discordContext}\n\n[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}`
+    : `[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}`;
+
+  await runPrompt(message.channel, conversationId, contextualPrompt, parentChannelId, message.author.id);
 }
