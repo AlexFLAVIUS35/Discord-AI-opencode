@@ -4,9 +4,24 @@ import { sanitizeModel } from "../utils/stringUtils.js";
 import { getAuthHeaders, assertNotAuthError } from "./serverAuth.js";
 
 const threadSseClients = new Map<string, SSEClient>();
+const activeExecutions = new Set<string>();
 
 function jsonHeaders(): Record<string, string> {
   return { "Content-Type": "application/json", ...getAuthHeaders() };
+}
+
+export function beginExecution(threadId: string): boolean {
+  if (activeExecutions.has(threadId)) return false;
+  activeExecutions.add(threadId);
+  return true;
+}
+
+export function endExecution(threadId: string): void {
+  activeExecutions.delete(threadId);
+}
+
+export function isExecutionActive(threadId: string): boolean {
+  return activeExecutions.has(threadId);
 }
 
 export async function createSession(port: number): Promise<string> {
@@ -40,7 +55,7 @@ export async function validateSession(port: number, sessionId: string): Promise<
 
 export async function getSessionInfo(port: number, sessionId: string): Promise<SessionInfo | null> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}`, { method: "GET", headers: jsonHeaders() });
+    const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}`, { headers: jsonHeaders() });
     if (!response.ok) { assertNotAuthError(response.status, "Failed to get session info"); return null; }
     const data = await response.json(); return { id: data.id, title: data.title ?? "" };
   } catch { return null; }
@@ -77,9 +92,6 @@ export function setSessionForThread(threadId: string, sessionId: string, project
 export async function ensureSessionForThread(threadId: string, projectPath: string, port: number): Promise<string> {
   const existingSession = getSessionForThread(threadId);
   if (existingSession && existingSession.projectPath === projectPath && existingSession.port === port) {
-    // The serve instance is already owned by this process and the session is
-    // already mapped to it. Avoid an extra validation request on every prompt.
-    // If OpenCode rejects the prompt later, the caller can recover normally.
     setSessionForThread(threadId, existingSession.sessionId, projectPath, port);
     return existingSession.sessionId;
   }
