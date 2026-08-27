@@ -11,7 +11,7 @@ import { processNextInQueue } from './queueManager.js';
 
 async function reactToLatestUserMessage(channel: TextBasedChannel, emoji: string): Promise<void> {
   try {
-    if (!('messages' in channel)) return;
+    if (!("messages" in channel)) return;
     const messages = await (channel as any).messages.fetch({ limit: 20 });
     const target = messages.find((message: Message) => !message.author.bot && !message.system);
     if (target) await target.react(emoji);
@@ -30,9 +30,6 @@ async function processAiReactions(channel: TextBasedChannel, text: string): Prom
 }
 
 export async function runPrompt(channel: TextBasedChannel | null, threadId: string, prompt: string, parentChannelId: string, userId?: string, interaction?: ChatInputCommandInteraction): Promise<void> {
-  // Hold the execution lock for the entire turn, including the hand-off to the
-  // coalesced queue. This prevents a tiny SSE disconnect/reconnect gap from
-  // spawning another turn and therefore another endless running indicator.
   const ownsExecutionLock = sessionManager.beginExecution(threadId);
   if (!ownsExecutionLock) {
     if (channel) dataStore.addToQueue(threadId, { prompt, userId: userId ?? 'unknown', timestamp: Date.now() });
@@ -96,8 +93,6 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
   };
 
   try {
-    // Give the model a short head start before showing the running animation.
-    // This keeps very fast responses from flashing a spinner unnaturally.
     await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     await startRunningIndicator();
     port = await serveManager.spawnServe(effectivePath, preferredModel, storageEnabled);
@@ -138,8 +133,11 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
     const personality = serverPersonality ?? (userId ? dataStore.getUserPersonality(userId) : undefined);
     const reactionInstructions = `\n\nDiscord reaction capability: You may react to the user's latest message when you genuinely feel like it. To do so, include [react:EMOJI] in your response, for example [react:😭] or [react:💀]. You can also include normal text in the same response, and you can request multiple reactions in one marker, such as [react:🥹✌️]. Each adjacent emoji is treated as a separate reaction. The marker will be hidden from the user. Do not use reactions constantly; they should be occasional and spontaneous. If you want only a reaction and no text, output only the marker. Never explain the marker.`;
     const effectivePrompt = personality ? `[Permanent personality instructions for this Discord server/user]\n${personality}\n\n[User message]\n${prompt}${reactionInstructions}` : `${prompt}${reactionInstructions}`;
-    await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
+    // Set this before awaiting sendPrompt. Very fast OpenCode responses can emit
+    // session idle before sendPrompt resolves; setting it afterward can cause
+    // the idle handler to ignore the completed response forever.
     promptSent = true;
+    await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
   } catch (error) {
     await stopRunningIndicator(); console.error('OpenCode execution failed:', error);
     const client = sessionManager.getSseClient(threadId); if (client) { client.disconnect(); sessionManager.clearSseClient(threadId); }
