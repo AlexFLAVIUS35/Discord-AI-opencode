@@ -1,4 +1,4 @@
-import { Message, MessageFlags } from 'discord.js';
+import { Message, MessageFlags, TextBasedChannel } from 'discord.js';
 import * as dataStore from '../services/dataStore.js';
 import { runPrompt } from '../services/executionService.js';
 import { isBusy } from '../services/queueManager.js';
@@ -9,6 +9,72 @@ import * as activation from '../services/activationService.js';
 import { buildDiscordContext } from '../services/discordContextService.js';
 import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE, applyAIEnumerationClassification, getEnumerationMaxRequested } from '../utils/requestGuard.js';
 import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
+
+const ACTIVE_LISTEN_DELAY_MS = 3000;
+
+type PendingActiveMessage = {
+  message: Message;
+  prompt: string;
+  userId: string;
+  parentChannelId: string;
+};
+
+type PendingActiveTurn = {
+  channel: TextBasedChannel;
+  messages: PendingActiveMessage[];
+  timer: NodeJS.Timeout;
+};
+
+// Debounce active-mode messages so Leeha listens for a short burst of conversation
+// before deciding to respond. A new message resets the three-second window.
+const pendingActiveTurns = new Map<string, PendingActiveTurn>();
+
+async function flushActiveTurn(conversationId: string): Promise<void> {
+  const pending = pendingActiveTurns.get(conversationId);
+  if (!pending) return;
+  pendingActiveTurns.delete(conversationId);
+
+  const messages = pending.messages;
+  if (!messages.length) return;
+
+  const latest = messages[messages.length - 1];
+  try {
+    const discordContext = await buildDiscordContext(latest.message);
+    const burst = messages.length > 1
+      ? `\n\n[Messages received during the 3-second listening window]\n${messages.map(item => `[${item.message.id}] ${item.message.member?.displayName ?? item.message.author.globalName ?? item.message.author.username} (${item.userId}): ${item.prompt}`).join('\n')}`
+      : '';
+    const contextualPrompt = discordContext
+      ? `${discordContext}${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`
+      : `${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`;
+
+    if (isBusy(conversationId) || sessionManager.isExecutionActive(conversationId)) {
+      dataStore.addToQueue(conversationId, { prompt: contextualPrompt, userId: latest.userId, timestamp: Date.now() });
+      return;
+    }
+
+    await runPrompt(pending.channel, conversationId, contextualPrompt, latest.parentChannelId, latest.userId);
+  } catch (error) {
+    console.error('[Active Mode] Failed to flush listening window:', error instanceof Error ? error.message : error);
+  }
+}
+
+function scheduleActiveMessage(message: Message, prompt: string, parentChannelId: string): void {
+  const conversationId = message.channel.id;
+  const existing = pendingActiveTurns.get(conversationId);
+  if (existing) {
+    existing.messages.push({ message, prompt, userId: message.author.id, parentChannelId });
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => { void flushActiveTurn(conversationId); }, ACTIVE_LISTEN_DELAY_MS);
+    return;
+  }
+
+  const timer = setTimeout(() => { void flushActiveTurn(conversationId); }, ACTIVE_LISTEN_DELAY_MS);
+  pendingActiveTurns.set(conversationId, {
+    channel: message.channel,
+    messages: [{ message, prompt, userId: message.author.id, parentChannelId }],
+    timer,
+  });
+}
 
 async function safeReact(message: Message, emoji: string): Promise<void> {
   try { await message.react(emoji); }
@@ -75,6 +141,15 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   }
 
   const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
+
+  // In active mode, wait three seconds after the latest message before deciding
+  // whether to respond. Messages arriving during that window are included as a
+  // single conversational burst instead of triggering separate model runs.
+  if (!voiceAttachment) {
+    scheduleActiveMessage(message, prompt, parentChannelId);
+    return;
+  }
+
   const discordContext = await buildDiscordContext(message);
   const contextualPrompt = discordContext
     ? `${discordContext}\n\n[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}`
