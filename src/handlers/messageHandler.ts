@@ -23,10 +23,13 @@ type PendingActiveTurn = {
   channel: TextBasedChannel;
   messages: PendingActiveMessage[];
   timer: NodeJS.Timeout;
+  typingObserved: boolean;
+  lastTypingAt: number;
 };
 
-// Debounce active-mode messages so Leeha listens for a short burst of conversation
-// before deciding to respond. A new message resets the three-second window.
+// Active mode waits for a short quiet period before responding. Typing-start
+// events reset that quiet period, allowing Leeha to listen while someone is
+// still composing a message instead of reacting immediately.
 const pendingActiveTurns = new Map<string, PendingActiveTurn>();
 
 async function flushActiveTurn(conversationId: string): Promise<void> {
@@ -41,7 +44,7 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
   try {
     const discordContext = await buildDiscordContext(latest.message);
     const burst = messages.length > 1
-      ? `\n\n[Messages received during the 3-second listening window]\n${messages.map(item => `[${item.message.id}] ${item.message.member?.displayName ?? item.message.author.globalName ?? item.message.author.username} (${item.userId}): ${item.prompt}`).join('\n')}`
+      ? `\n\n[Messages received during the listening window]\n${messages.map(item => `[${item.message.id}] ${item.message.member?.displayName ?? item.message.author.globalName ?? item.message.author.username} (${item.userId}): ${item.prompt}`).join('\n')}`
       : '';
     const contextualPrompt = discordContext
       ? `${discordContext}${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`
@@ -58,13 +61,17 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
   }
 }
 
+function resetActiveTimer(conversationId: string, pending: PendingActiveTurn): void {
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => { void flushActiveTurn(conversationId); }, ACTIVE_LISTEN_DELAY_MS);
+}
+
 function scheduleActiveMessage(message: Message, prompt: string, parentChannelId: string): void {
   const conversationId = message.channel.id;
   const existing = pendingActiveTurns.get(conversationId);
   if (existing) {
     existing.messages.push({ message, prompt, userId: message.author.id, parentChannelId });
-    clearTimeout(existing.timer);
-    existing.timer = setTimeout(() => { void flushActiveTurn(conversationId); }, ACTIVE_LISTEN_DELAY_MS);
+    resetActiveTimer(conversationId, existing);
     return;
   }
 
@@ -73,7 +80,24 @@ function scheduleActiveMessage(message: Message, prompt: string, parentChannelId
     channel: message.channel,
     messages: [{ message, prompt, userId: message.author.id, parentChannelId }],
     timer,
+    typingObserved: false,
+    lastTypingAt: 0,
   });
+}
+
+/**
+ * Called from Discord's TypingStart event. We intentionally do not start the
+ * running animation here: typing only extends the listening/debounce window.
+ * The response flow begins only after three seconds without a new typing event.
+ */
+export function handleTypingStart(channelId: string, userId: string): void {
+  const pending = pendingActiveTurns.get(channelId);
+  if (!pending) return;
+
+  pending.typingObserved = true;
+  pending.lastTypingAt = Date.now();
+  resetActiveTimer(channelId, pending);
+  console.debug(`[Active Mode] Typing detected from ${userId}; extending listening window.`);
 }
 
 async function safeReact(message: Message, emoji: string): Promise<void> {
@@ -119,9 +143,8 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     }
   }
 
-  // Treat the whole active channel as one conversation. A processing lock closes
-  // the tiny race between a response finishing and its coalesced follow-up turn
-  // starting, which previously created multiple permanent running indicators.
+  // Treat the whole active channel as one conversation. Keep the processing lock
+  // before scheduling so bursts cannot create competing active turns.
   if (isBusy(conversationId) || sessionManager.isExecutionActive(conversationId)) {
     if (voiceAttachment) dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
     else dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
@@ -142,9 +165,8 @@ export async function handleMessageCreate(message: Message): Promise<void> {
 
   const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
 
-  // In active mode, wait three seconds after the latest message before deciding
-  // whether to respond. Messages arriving during that window are included as a
-  // single conversational burst instead of triggering separate model runs.
+  // Text messages enter the typing-aware listening window. The running animation
+  // is only started by runPrompt after this window has completely elapsed.
   if (!voiceAttachment) {
     scheduleActiveMessage(message, prompt, parentChannelId);
     return;
