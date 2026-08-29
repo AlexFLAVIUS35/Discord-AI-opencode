@@ -2,7 +2,7 @@ import { Client, GatewayIntentBits, Events, Partials } from 'discord.js';
 import pc from 'picocolors';
 import { getBotConfig } from './services/configStore.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
-import { handleMessageCreate } from './handlers/messageHandler.js';
+import { handleMessageCreate, handleTypingStart } from './handlers/messageHandler.js';
 import * as serveManager from './services/serveManager.js';
 import { initializeProxySupport } from './services/proxySupport.js';
 import { getCachedModels } from './commands/model.js';
@@ -18,7 +18,9 @@ export async function startBot(): Promise<void> {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.GuildMessageTyping,
       GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.DirectMessageTyping,
       GatewayIntentBits.MessageContent,
     ],
     // DM channels are not guaranteed to be cached. Without the Channel
@@ -34,6 +36,10 @@ export async function startBot(): Promise<void> {
   
   client.on(Events.InteractionCreate, handleInteraction);
   client.on(Events.MessageCreate, handleMessageCreate);
+  client.on(Events.TypingStart, (typing) => {
+    if (typing.user.bot) return;
+    handleTypingStart(typing.channel.id, typing.user.id);
+  });
   
   function gracefulShutdown(signal: string) {
     console.log(pc.yellow(`\n${signal} received. Shutting down gracefully...`));
