@@ -3,6 +3,8 @@ import * as dataStore from "./dataStore.js";
 import { sanitizeModel } from "../utils/stringUtils.js";
 import { getAuthHeaders, assertNotAuthError } from "./serverAuth.js";
 
+const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+
 const threadSseClients = new Map<string, SSEClient>();
 const activeExecutions = new Set<string>();
 
@@ -38,8 +40,39 @@ function parseModelString(model: string): { providerID: string; modelID: string 
   return { providerID: clean.slice(0, slashIndex), modelID: clean.slice(slashIndex + 1) };
 }
 
-export async function sendPrompt(port: number, sessionId: string, text: string, model?: string): Promise<void> {
-  const body: { parts: { type: string; text: string }[]; model?: { providerID: string; modelID: string } } = { parts: [{ type: "text", text }] };
+export interface PromptMediaAttachment {
+  url: string;
+  name: string;
+  mime?: string | null;
+}
+
+async function mediaParts(attachments: PromptMediaAttachment[]): Promise<{ type: string; mime: string; url: string }[]> {
+  const parts: { type: string; mime: string; url: string }[] = [];
+  for (const attachment of attachments.slice(0, 10)) {
+    try {
+      const response = await fetch(attachment.url);
+      if (!response.ok) continue;
+      const contentLength = Number(response.headers.get('content-length') ?? 0);
+      if (contentLength > MAX_MEDIA_BYTES) continue;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > MAX_MEDIA_BYTES) continue;
+      const mime = attachment.mime || response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream';
+      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) continue;
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
+      parts.push({ type: 'file', mime, url: `data:${mime};base64,${Buffer.from(binary, 'binary').toString('base64')}` });
+    } catch (error) {
+      console.error(`[Media] Failed to download ${attachment.name}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return parts;
+}
+
+export async function sendPrompt(port: number, sessionId: string, text: string, model?: string, attachments: PromptMediaAttachment[] = []): Promise<void> {
+  const parts: { type: string; text?: string; mime?: string; url?: string }[] = [{ type: "text", text }];
+  if (attachments.length) parts.push(...await mediaParts(attachments));
+  const body: { parts: typeof parts; model?: { providerID: string; modelID: string } } = { parts };
   if (model) { const parsedModel = parseModelString(model); if (parsedModel) body.model = parsedModel; }
   const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}/prompt_async`, { method: "POST", headers: jsonHeaders(), body: JSON.stringify(body) });
   if (!response.ok) { const responseBody = await response.text(); assertNotAuthError(response.status, "Failed to send prompt"); throw new Error(`Failed to send prompt: ${response.status} ${response.statusText} — ${responseBody}`); }
