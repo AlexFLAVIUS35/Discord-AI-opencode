@@ -1,6 +1,6 @@
 import { Message, MessageFlags, TextBasedChannel } from 'discord.js';
+import { runPrompt, type RunPromptMedia } from '../services/executionService.js';
 import * as dataStore from '../services/dataStore.js';
-import { runPrompt } from '../services/executionService.js';
 import { isBusy } from '../services/queueManager.js';
 import * as sessionManager from '../services/sessionManager.js';
 import { isAuthorized } from '../services/configStore.js';
@@ -27,10 +27,23 @@ type PendingActiveTurn = {
   lastTypingAt: number;
 };
 
-// Active mode waits for a short quiet period before responding. Typing-start
-// events reset that quiet period, allowing Leeha to listen while someone is
-// still composing a message instead of reacting immediately.
 const pendingActiveTurns = new Map<string, PendingActiveTurn>();
+
+function getImageAttachments(messages: Message[]): RunPromptMedia[] {
+  const result: RunPromptMedia[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    for (const attachment of message.attachments.values()) {
+      const mime = attachment.contentType?.split(';')[0]?.toLowerCase();
+      if (!mime || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) continue;
+      if (seen.has(attachment.url)) continue;
+      seen.add(attachment.url);
+      result.push({ url: attachment.url, name: attachment.name, mime });
+      if (result.length >= 10) return result;
+    }
+  }
+  return result;
+}
 
 async function flushActiveTurn(conversationId: string): Promise<void> {
   const pending = pendingActiveTurns.get(conversationId);
@@ -46,6 +59,7 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
     const burst = messages.length > 1
       ? `\n\n[Messages received during the listening window]\n${messages.map(item => `[${item.message.id}] ${item.message.member?.displayName ?? item.message.author.globalName ?? item.message.author.username} (${item.userId}): ${item.prompt}`).join('\n')}`
       : '';
+    const media = getImageAttachments(messages.map(item => item.message));
     const contextualPrompt = discordContext
       ? `${discordContext}${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`
       : `${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`;
@@ -55,7 +69,7 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
       return;
     }
 
-    await runPrompt(pending.channel, conversationId, contextualPrompt, latest.parentChannelId, latest.userId);
+    await runPrompt(pending.channel, conversationId, contextualPrompt, latest.parentChannelId, latest.userId, undefined, media);
   } catch (error) {
     console.error('[Active Mode] Failed to flush listening window:', error instanceof Error ? error.message : error);
   }
@@ -85,15 +99,9 @@ function scheduleActiveMessage(message: Message, prompt: string, parentChannelId
   });
 }
 
-/**
- * Called from Discord's TypingStart event. We intentionally do not start the
- * running animation here: typing only extends the listening/debounce window.
- * The response flow begins only after three seconds without a new typing event.
- */
 export function handleTypingStart(channelId: string, userId: string): void {
   const pending = pendingActiveTurns.get(channelId);
   if (!pending) return;
-
   pending.typingObserved = true;
   pending.lastTypingAt = Date.now();
   resetActiveTimer(channelId, pending);
@@ -121,7 +129,11 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   let prompt = message.content.trim();
   const isVoiceMessage = !prompt && isVoiceEnabled() && message.flags.has(MessageFlags.IsVoiceMessage);
   const voiceAttachment = isVoiceMessage ? message.attachments.first() : undefined;
-  if (!prompt && !voiceAttachment) return;
+  const hasImageAttachment = [...message.attachments.values()].some(a => {
+    const mime = a.contentType?.split(';')[0]?.toLowerCase();
+    return ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime ?? '');
+  });
+  if (!prompt && !voiceAttachment && !hasImageAttachment) return;
 
   if (message.client.user) prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
 
@@ -143,8 +155,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     }
   }
 
-  // Treat the whole active channel as one conversation. Keep the processing lock
-  // before scheduling so bursts cannot create competing active turns.
   if (isBusy(conversationId) || sessionManager.isExecutionActive(conversationId)) {
     if (voiceAttachment) dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
     else dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
@@ -165,8 +175,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
 
   const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
 
-  // Text messages enter the typing-aware listening window. The running animation
-  // is only started by runPrompt after this window has completely elapsed.
   if (!voiceAttachment) {
     scheduleActiveMessage(message, prompt, parentChannelId);
     return;
@@ -177,5 +185,5 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     ? `${discordContext}\n\n[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}`
     : `[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}`;
 
-  await runPrompt(message.channel, conversationId, contextualPrompt, parentChannelId, message.author.id);
+  await runPrompt(message.channel, conversationId, contextualPrompt, parentChannelId, message.author.id, undefined, []);
 }
