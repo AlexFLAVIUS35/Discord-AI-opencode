@@ -1,100 +1,19 @@
 import type { ChildProcess } from 'node:child_process';
 
-export interface ProjectConfig {
-  alias: string;
-  path: string;
-  autoWorktree?: boolean;
-  autoPassthrough?: boolean;
-}
-
-export interface ChannelBinding {
-  channelId: string;
-  projectAlias: string;
-  model?: string;
-}
-
-export interface UserPersonality {
-  userId: string;
-  personality: string;
-  updatedAt: number;
-}
-
+export interface ProjectConfig { alias: string; path: string; autoWorktree?: boolean; autoPassthrough?: boolean; }
+export interface ChannelBinding { channelId: string; projectAlias: string; model?: string; }
+export interface UserPersonality { userId: string; personality: string; updatedAt: number; }
+export interface MemoryEntry { id: string; conversationId: string; userId: string; role: 'user' | 'assistant'; text: string; createdAt: number; }
 export interface DataStore {
-  projects: ProjectConfig[];
-  bindings: ChannelBinding[];
-  channelModels?: Record<string, string>;
-  userPersonalities?: UserPersonality[];
-  threadSessions?: ThreadSession[];
-  worktreeMappings?: WorktreeMapping[];
-  passthroughThreads?: PassthroughThread[];
-  queues?: Record<string, QueuedMessage[]>;
-  queueSettings?: Record<string, QueueSettings>;
+  projects: ProjectConfig[]; bindings: ChannelBinding[]; channelModels?: Record<string, string>; userPersonalities?: UserPersonality[];
+  threadSessions?: ThreadSession[]; worktreeMappings?: WorktreeMapping[]; passthroughThreads?: PassthroughThread[]; queues?: Record<string, QueuedMessage[]>; queueSettings?: Record<string, QueueSettings>; memories?: MemoryEntry[];
 }
-
-export interface QueuedMessage {
-  prompt: string;
-  userId: string;
-  timestamp: number;
-  voiceAttachmentUrl?: string;
-  voiceAttachmentSize?: number;
-}
-
-export interface QueueSettings {
-  paused: boolean;
-  continueOnFailure: boolean;
-  freshContext: boolean;
-}
-
-export interface TextPart {
-  id: string;
-  sessionID: string;
-  messageID: string;
-  text: string;
-}
-
-export interface SSEEvent {
-  type: string;
-  properties: Record<string, unknown>;
-}
-
-export interface ServeInstance {
-  port: number;
-  process: ChildProcess;
-  startTime: number;
-  exited?: boolean;
-  exitCode?: number | null;
-  exitError?: string;
-}
-
-export interface ThreadSession {
-  threadId: string;
-  sessionId: string;
-  projectPath: string;
-  port: number;
-  createdAt: number;
-  lastUsedAt: number;
-}
-
-export interface WorktreeMapping {
-  threadId: string;
-  branchName: string;
-  worktreePath: string;
-  description: string;
-  projectPath: string;
-  createdAt: number;
-}
-
-export interface PassthroughThread {
-  threadId: string;
-  enabled: boolean;
-  enabledBy: string;
-  enabledAt: number;
-}
-
-export interface SessionErrorInfo {
-  name: 'ProviderAuthError' | 'UnknownError' | 'MessageOutputLengthError' | 'MessageAbortedError';
-  data: {
-    message?: string;
-    providerID?: string;
-  };
-}
+export interface QueuedMessage { prompt: string; userId: string; timestamp: number; voiceAttachmentUrl?: string; voiceAttachmentSize?: number; }
+export interface QueueSettings { paused: boolean; continueOnFailure: boolean; freshContext: boolean; }
+export interface TextPart { id: string; sessionID: string; messageID: string; text: string; }
+export interface SSEEvent { type: string; properties: Record<string, unknown>; }
+export interface ServeInstance { port: number; process: ChildProcess; startTime: number; exited?: boolean; exitCode?: number | null; exitError?: string; }
+export interface ThreadSession { threadId: string; sessionId: string; projectPath: string; port: number; createdAt: number; lastUsedAt: number; }
+export interface WorktreeMapping { threadId: string; branchName: string; worktreePath: string; description: string; projectPath: string; createdAt: number; }
+export interface PassthroughThread { threadId: string; enabled: boolean; enabledBy: string; enabledAt: number; }
+export interface SessionErrorInfo { name: 'ProviderAuthError' | 'UnknownError' | 'MessageOutputLengthError' | 'MessageAbortedError'; data: { message?: string; providerID?: string; }; }
