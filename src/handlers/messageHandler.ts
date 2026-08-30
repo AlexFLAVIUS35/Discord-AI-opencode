@@ -10,11 +10,13 @@ import { buildDiscordContext } from '../services/discordContextService.js';
 import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE, applyAIEnumerationClassification, getEnumerationMaxRequested } from '../utils/requestGuard.js';
 import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
 
-const ACTIVE_LISTEN_DELAY_MS = 3000;
+// Discord exposes typing-start events, but no reliable typing-stop event.
+// A Discord typing indicator is short-lived unless more typing-start events arrive.
+// Treat the last typing event as the start of a conservative 10s activity window,
+// then require an additional 3s of silence before sending the active turn to OpenCode.
+const DISCORD_TYPING_ACTIVITY_MS = 10_000;
+const ACTIVE_SILENCE_DELAY_MS = 3_000;
 
-// Discord only gives us typing-start events, not a reliable typing-stop event.
-// Keep the last typing timestamp even when no message is pending so a typing
-// event that happened just before a message is still respected.
 const recentTypingAt = new Map<string, number>();
 
 type PendingActiveMessage = { message: Message; prompt: string; userId: string; parentChannelId: string };
@@ -52,15 +54,19 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
   } catch (error) { console.error('[Active Mode] Failed to flush listening window:', error instanceof Error ? error.message : error); }
 }
 
-function resetActiveTimer(conversationId: string, pending: PendingActiveTurn): void {
+function scheduleAfterTypingSilence(conversationId: string, pending: PendingActiveTurn): void {
   clearTimeout(pending.timer);
-  const elapsedSinceTyping = pending.lastTypingAt ? Date.now() - pending.lastTypingAt : ACTIVE_LISTEN_DELAY_MS;
-  const delay = Math.max(0, ACTIVE_LISTEN_DELAY_MS - elapsedSinceTyping);
+  const lastTyping = pending.lastTypingAt;
+  const now = Date.now();
+  const typingWindowRemaining = lastTyping ? Math.max(0, DISCORD_TYPING_ACTIVITY_MS - (now - lastTyping)) : 0;
+  // Once Discord's typing activity window has elapsed, wait a further 3 seconds.
+  const delay = typingWindowRemaining + ACTIVE_SILENCE_DELAY_MS;
   pending.timer = setTimeout(() => {
-    // If another typing event arrived while the timer was running, wait for
-    // three seconds of typing silence instead of starting immediately.
-    if (pending.lastTypingAt && Date.now() - pending.lastTypingAt < ACTIVE_LISTEN_DELAY_MS) {
-      resetActiveTimer(conversationId, pending); return;
+    const latestTyping = recentTypingAt.get(conversationId) ?? pending.lastTypingAt;
+    if (latestTyping !== lastTyping || Date.now() - latestTyping < DISCORD_TYPING_ACTIVITY_MS) {
+      pending.lastTypingAt = latestTyping;
+      scheduleAfterTypingSilence(conversationId, pending);
+      return;
     }
     void flushActiveTurn(conversationId);
   }, delay);
@@ -71,13 +77,19 @@ function scheduleActiveMessage(message: Message, prompt: string, parentChannelId
   const existing = pendingActiveTurns.get(conversationId);
   if (existing) {
     existing.messages.push({ message, prompt, userId: message.author.id, parentChannelId });
-    existing.lastTypingAt = Math.max(existing.lastTypingAt, recentTypingAt.get(conversationId) ?? 0);
-    resetActiveTimer(conversationId, existing); return;
+    existing.lastTypingAt = recentTypingAt.get(conversationId) ?? existing.lastTypingAt;
+    scheduleAfterTypingSilence(conversationId, existing);
+    return;
   }
   const lastTypingAt = recentTypingAt.get(conversationId) ?? 0;
-  const pending: PendingActiveTurn = { channel: message.channel, messages: [{ message, prompt, userId: message.author.id, parentChannelId }], timer: undefined as unknown as NodeJS.Timeout, lastTypingAt };
+  const pending: PendingActiveTurn = {
+    channel: message.channel,
+    messages: [{ message, prompt, userId: message.author.id, parentChannelId }],
+    timer: undefined as unknown as NodeJS.Timeout,
+    lastTypingAt,
+  };
   pendingActiveTurns.set(conversationId, pending);
-  resetActiveTimer(conversationId, pending);
+  scheduleAfterTypingSilence(conversationId, pending);
 }
 
 export function handleTypingStart(channelId: string, userId: string): void {
@@ -85,11 +97,12 @@ export function handleTypingStart(channelId: string, userId: string): void {
   recentTypingAt.set(channelId, now);
   const pending = pendingActiveTurns.get(channelId);
   if (!pending) {
-    console.debug(`[Active Mode] Typing detected from ${userId}; recorded for the next message.`); return;
+    console.debug(`[Active Mode] Typing detected from ${userId}; recorded for the next message.`);
+    return;
   }
   pending.lastTypingAt = now;
-  resetActiveTimer(channelId, pending);
-  console.debug(`[Active Mode] Typing detected from ${userId}; waiting for typing silence.`);
+  scheduleAfterTypingSilence(channelId, pending);
+  console.debug(`[Active Mode] Typing detected from ${userId}; waiting for typing activity to expire, then 3s silence.`);
 }
 
 async function safeReact(message: Message, emoji: string): Promise<void> { try { await message.react(emoji); } catch (error) { console.error(`[Voice STT] Failed to react with ${emoji}:`, error instanceof Error ? error.message : error); } }
