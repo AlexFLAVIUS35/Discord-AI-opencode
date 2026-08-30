@@ -29,7 +29,13 @@ async function processAiReactions(channel: TextBasedChannel, text: string): Prom
   return cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-export async function runPrompt(channel: TextBasedChannel | null, threadId: string, prompt: string, parentChannelId: string, userId?: string, interaction?: ChatInputCommandInteraction): Promise<void> {
+export interface RunPromptMedia {
+  url: string;
+  name: string;
+  mime?: string | null;
+}
+
+export async function runPrompt(channel: TextBasedChannel | null, threadId: string, prompt: string, parentChannelId: string, userId?: string, interaction?: ChatInputCommandInteraction, media: RunPromptMedia[] = []): Promise<void> {
   const ownsExecutionLock = sessionManager.beginExecution(threadId);
   if (!ownsExecutionLock) {
     if (channel) dataStore.addToQueue(threadId, { prompt, userId: userId ?? 'unknown', timestamp: Date.now() });
@@ -132,12 +138,10 @@ export async function runPrompt(channel: TextBasedChannel | null, threadId: stri
     const serverPersonality = guildId ? guildPersonality.getPersonality(guildId) : undefined;
     const personality = serverPersonality ?? (userId ? dataStore.getUserPersonality(userId) : undefined);
     const reactionInstructions = `\n\nDiscord reaction capability: You may react to the user's latest message when you genuinely feel like it. To do so, include [react:EMOJI] in your response, for example [react:😭] or [react:💀]. You can also include normal text in the same response, and you can request multiple reactions in one marker, such as [react:🥹✌️]. Each adjacent emoji is treated as a separate reaction. The marker will be hidden from the user. Do not use reactions constantly; they should be occasional and spontaneous. If you want only a reaction and no text, output only the marker. Never explain the marker.`;
-    const effectivePrompt = personality ? `[Permanent personality instructions for this Discord server/user]\n${personality}\n\n[User message]\n${prompt}${reactionInstructions}` : `${prompt}${reactionInstructions}`;
-    // Set this before awaiting sendPrompt. Very fast OpenCode responses can emit
-    // session idle before sendPrompt resolves; setting it afterward can cause
-    // the idle handler to ignore the completed response forever.
+    const mediaInstructions = media.length ? `\n\n[Discord media attached]\nThe attached image/GIF files are actual user-provided media. Inspect them when your selected model supports image input. Do not pretend you saw media if the model cannot process it.\n${media.map(item => `- ${item.name}`).join('\n')}` : '';
+    const effectivePrompt = personality ? `[Permanent personality instructions for this Discord server/user]\n${personality}\n\n[User message]\n${prompt}${mediaInstructions}${reactionInstructions}` : `${prompt}${mediaInstructions}${reactionInstructions}`;
     promptSent = true;
-    await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel);
+    await sessionManager.sendPrompt(port, sessionId, effectivePrompt, preferredModel, media);
   } catch (error) {
     await stopRunningIndicator(); console.error('OpenCode execution failed:', error);
     const client = sessionManager.getSseClient(threadId); if (client) { client.disconnect(); sessionManager.clearSseClient(threadId); }
