@@ -12,12 +12,13 @@ export async function deployCommands(): Promise<void> {
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
   initializeProxySupport();
 
-  // Guild commands update immediately, avoiding the propagation delay of global commands.
-  console.log(pc.dim(`Deploying ${commandsData.length} slash commands to guild ${config.guildId}...`));
-  await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: commandsData });
+  // Register commands globally only. Registering the same command set both
+  // globally and in the guild makes Discord display duplicate command entries.
+  console.log(pc.dim(`Removing legacy guild command registration from ${config.guildId}...`));
+  await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: [] });
 
   console.log(pc.dim(`Deploying ${commandsData.length} global slash commands...`));
   await rest.put(Routes.applicationCommands(config.clientId), { body: commandsData });
 
-  console.log(pc.green(`Successfully deployed ${commandsData.length} slash commands to guild and globally.`));
+  console.log(pc.green(`Successfully deployed ${commandsData.length} global slash commands.`));
 }
