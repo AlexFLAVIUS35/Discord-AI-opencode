@@ -8,7 +8,6 @@ import * as guildPersonality from './guildPersonalityStore.js';
 import * as memory from './memoryService.js';
 import { SSEClient } from './sseClient.js';
 import { formatOutputForMobile } from '../utils/messageFormatter.js';
-import { processNextInQueue } from './queueManager.js';
 
 async function reactToLatestUserMessage(channel: TextBasedChannel, emoji: string): Promise<void> { try { if (!("messages" in channel)) return; const messages = await (channel as any).messages.fetch({ limit: 20 }); const target = messages.find((message: Message) => !message.author.bot && !message.system); if (target) await target.react(emoji); } catch (error) { console.error(`Failed to add AI reaction ${emoji}:`, error instanceof Error ? error.message : error); } }
 async function processAiReactions(channel: TextBasedChannel, text: string): Promise<string> { const reactions: string[]=[]; const cleaned=text.replace(/\[react:([^\]\r\n]{1,64})\]/gu,(_m,emojiText:string)=>{const segmenter=new Intl.Segmenter(undefined,{granularity:'grapheme'});for(const part of segmenter.segment(emojiText.trim())){const emoji=part.segment.trim();if(emoji)reactions.push(emoji)}return ''});for(const emoji of reactions)await reactToLatestUserMessage(channel,emoji);return cleaned.replace(/[ \t]{2,}/g,' ').replace(/\n{3,}/g,'\n\n').trim();}
