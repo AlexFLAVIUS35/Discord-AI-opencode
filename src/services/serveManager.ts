@@ -41,7 +41,11 @@ async function findAvailablePort(): Promise<number> {
 }
 function cleanupInstance(key: string): void { instances.delete(key); }
 function getPermissionConfig(storageEnabled: boolean): string {
-  const permission = storageEnabled ? { "*": "deny", read: "allow", edit: "allow", glob: "allow", grep: "allow", list: "allow", external_directory: "deny", bash: "deny", task: "deny", skill: "deny", lsp: "deny", question: "deny", webfetch: "deny", websearch: "deny" } : { "*": "deny" };
+  // Web access is deliberately read-only: websearch discovers sources and webfetch
+  // retrieves pages, while shell/edit tools remain unavailable to the Discord agent.
+  const permission = storageEnabled
+    ? { "*": "deny", read: "allow", edit: "allow", glob: "allow", grep: "allow", list: "allow", external_directory: "deny", bash: "deny", task: "deny", skill: "deny", lsp: "deny", question: "deny", webfetch: "allow", websearch: "allow" }
+    : { "*": "deny", webfetch: "allow", websearch: "allow" };
   return JSON.stringify({ "$schema": "https://opencode.ai/config.json", permission });
 }
 
@@ -57,8 +61,8 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   const key = getInstanceKey(projectPath, storageEnabled);
   const existing = instances.get(key); if (existing && !existing.exited) return existing.port; if (existing?.exited) cleanupInstance(key);
   const port = await findAvailablePort(); const args = ["serve", "--port", port.toString()];
-  const env = { ...process.env, OPENCODE_CONFIG_CONTENT: getPermissionConfig(storageEnabled) }; const command = resolveOpencodeCommand(env);
-  console.log(`[opencode] Spawning: ${command} ${args.join(" ")}`); console.log(`[opencode] Working directory: ${projectPath}`); console.log(`[opencode] Storage access: ${storageEnabled ? "ENABLED" : "DISABLED"}`);
+  const env = { ...process.env, OPENCODE_ENABLE_EXA: "1", OPENCODE_CONFIG_CONTENT: getPermissionConfig(storageEnabled) }; const command = resolveOpencodeCommand(env);
+  console.log(`[opencode] Spawning: ${command} ${args.join(" ")}`); console.log(`[opencode] Working directory: ${projectPath}`); console.log(`[opencode] Storage access: ${storageEnabled ? "ENABLED" : "DISABLED"}`); console.log(`[opencode] Web search: ENABLED (OpenCode websearch + webfetch)`);
   const child = spawn(command, args, { cwd: projectPath, env, stdio: ["inherit", "pipe", "pipe"] }); const instance: ServeInstance = { port, process: child, startTime: Date.now(), exited: false }; instances.set(key, instance);
   let stderrBuffer = ""; let stdoutBuffer = "";
   child.stdout?.on("data", (data) => { const text = data.toString(); stdoutBuffer = (stdoutBuffer + text).slice(-2000); console.log(`[opencode stdout] ${text.trim()}`); });
