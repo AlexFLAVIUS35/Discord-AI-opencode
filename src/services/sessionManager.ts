@@ -79,23 +79,32 @@ async function fetchExternal(url: string): Promise<Response | null> {
   } catch { return null; }
 }
 
+async function responseToMedia(response: Response): Promise<{ url: string; mime: string } | null> {
+  const mime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+  if (!isSupportedImageMime(mime)) return null;
+  const contentLength = Number(response.headers.get('content-length') ?? 0);
+  if (contentLength > MAX_MEDIA_BYTES) return null;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
+  return { url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`, mime: mime! };
+}
+
 async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: string } | null> {
   const response = await fetchExternal(url);
   if (!response || !response.ok) return null;
   const responseMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
-  const finalUrl = safeUrl(response.url || url);
-  if (!finalUrl) return null;
-  if (isSupportedImageMime(responseMime)) return { url: finalUrl, mime: responseMime! };
+  if (isSupportedImageMime(responseMime)) return responseToMedia(response);
   if (!responseMime?.includes('html') && !responseMime?.includes('xhtml')) return null;
   const contentLength = Number(response.headers.get('content-length') ?? 0);
   if (contentLength > 2 * 1024 * 1024) return null;
+  const finalUrl = safeUrl(response.url || url);
+  if (!finalUrl) return null;
   const html = await response.text();
   for (const candidate of extractMetaMedia(html, finalUrl)) {
     const imageResponse = await fetchExternal(candidate);
     if (!imageResponse || !imageResponse.ok) continue;
-    const mime = imageResponse.headers.get('content-type')?.split(';')[0].toLowerCase();
-    const resolvedUrl = safeUrl(imageResponse.url || candidate);
-    if (resolvedUrl && isSupportedImageMime(mime)) return { url: resolvedUrl, mime: mime! };
+    const media = await responseToMedia(imageResponse);
+    if (media) return media;
   }
   return null;
 }
