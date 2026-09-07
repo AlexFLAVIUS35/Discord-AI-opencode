@@ -89,7 +89,29 @@ async function responseToMedia(response: Response): Promise<{ url: string; mime:
   return { url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`, mime: mime! };
 }
 
+function discordGifPngUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.hostname.toLowerCase() !== 'cdn.discordapp.com') return null;
+    if (!/\.gif$/i.test(url.pathname)) return null;
+    // Discord's media proxy can serve a GIF as a static PNG. This keeps
+    // animated GIF bytes away from vision providers that only accept stills.
+    url.hostname = 'media.discordapp.net';
+    url.search = '?format=png';
+    return safeUrl(url.href) ?? null;
+  } catch { return null; }
+}
+
 async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: string } | null> {
+  const discordPng = discordGifPngUrl(url);
+  if (discordPng) {
+    const pngResponse = await fetchExternal(discordPng);
+    if (pngResponse?.ok) {
+      const png = await responseToMedia(pngResponse);
+      if (png?.mime === 'image/png') return png;
+    }
+  }
+
   const response = await fetchExternal(url);
   if (!response || !response.ok) return null;
   const responseMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
