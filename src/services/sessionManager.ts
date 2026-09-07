@@ -20,55 +20,84 @@ export async function createSession(port: number): Promise<string> {
 function parseModelString(model: string): { providerID: string; modelID: string } | null { const clean = sanitizeModel(model); const slashIndex = clean.indexOf("/"); if (slashIndex === -1) return null; return { providerID: clean.slice(0, slashIndex), modelID: clean.slice(slashIndex + 1) }; }
 export interface PromptMediaAttachment { url: string; name: string; mime?: string | null; }
 
-const GIF_LINK_HOSTS = new Set(["tenor.com", "www.tenor.com", "tenor.co", "www.tenor.co", "klipy.com", "www.klipy.com", "klipy.app", "www.klipy.app"]);
-
 function isSupportedImageMime(mime: string | null | undefined): boolean {
   return ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes((mime ?? '').split(';')[0].toLowerCase());
 }
 
-function extractMetaImage(html: string): string | null {
-  const patterns = [
-    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["'][^>]*>/i,
-    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["'][^>]*>/i,
-  ];
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match?.[1]) {
-      try { return new URL(match[1], 'https://example.com').href; } catch { }
-    }
+function isPrivateHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === '0.0.0.0' || host === '::1') return true;
+  const parts = host.split('.').map(Number);
+  if (parts.length === 4 && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 255)) {
+    const [a, b] = parts;
+    return a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a === 0;
   }
-  return null;
+  return false;
 }
 
-async function resolveGifLink(url: string): Promise<{ url: string; mime?: string } | null> {
+function safeUrl(value: string, base?: string): string | null {
   try {
-    const parsed = new URL(url);
-    if (!GIF_LINK_HOSTS.has(parsed.hostname.toLowerCase())) return null;
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 Leeha/1.0' },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(7000),
-    });
-    if (!response.ok) return null;
-    const finalMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
-    if (isSupportedImageMime(finalMime)) return { url: response.url || url, mime: finalMime! };
-    const html = await response.text();
-    const imageUrl = extractMetaImage(html);
-    if (!imageUrl) return null;
-    const imageResponse = await fetch(imageUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 Leeha/1.0', Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(7000),
-    });
-    if (!imageResponse.ok) return null;
-    const mime = imageResponse.headers.get('content-type')?.split(';')[0].toLowerCase();
-    return isSupportedImageMime(mime) ? { url: imageResponse.url || imageUrl, mime: mime! } : null;
-  } catch (error) {
-    console.error(`[Media] Failed to resolve GIF link ${url}:`, error instanceof Error ? error.message : error);
-    return null;
+    const url = new URL(value, base);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password || isPrivateHostname(url.hostname)) return null;
+    return url.href;
+  } catch { return null; }
+}
+
+function extractMetaMedia(html: string, baseUrl: string): string[] {
+  const results: string[] = [];
+  const patterns = [
+    /<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image(?::src)?)["'][^>]+content=["']([^"']+)["'][^>]*>/gi,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image(?::src)?)["'][^>]*>/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of html.matchAll(pattern)) {
+      const url = safeUrl(match[1], baseUrl);
+      if (url && !results.includes(url)) results.push(url);
+    }
   }
+  for (const match of html.matchAll(/<(?:img|source)[^>]+(?:src|srcset)=["']([^"']+)["'][^>]*>/gi)) {
+    const candidate = match[1].split(',')[0].trim().split(/\s+/)[0];
+    const url = safeUrl(candidate, baseUrl);
+    if (url && /\.(?:gif|webp|png|jpe?g)(?:[?#]|$)/i.test(url) && !results.includes(url)) results.push(url);
+    if (results.length >= 10) break;
+  }
+  return results.slice(0, 10);
+}
+
+async function fetchExternal(url: string): Promise<Response | null> {
+  const initial = safeUrl(url);
+  if (!initial) return null;
+  try {
+    const response = await fetch(initial, {
+      headers: { 'User-Agent': 'Mozilla/5.0 Leeha/1.0', Accept: 'text/html,application/xhtml+xml,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!safeUrl(response.url || initial)) return null;
+    return response;
+  } catch { return null; }
+}
+
+async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: string } | null> {
+  const response = await fetchExternal(url);
+  if (!response || !response.ok) return null;
+  const responseMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+  const finalUrl = safeUrl(response.url || url);
+  if (!finalUrl) return null;
+  if (isSupportedImageMime(responseMime)) return { url: finalUrl, mime: responseMime! };
+  if (!responseMime?.includes('html') && !responseMime?.includes('xhtml')) return null;
+  const contentLength = Number(response.headers.get('content-length') ?? 0);
+  if (contentLength > 2 * 1024 * 1024) return null;
+  const html = await response.text();
+  for (const candidate of extractMetaMedia(html, finalUrl)) {
+    const imageResponse = await fetchExternal(candidate);
+    if (!imageResponse || !imageResponse.ok) continue;
+    const mime = imageResponse.headers.get('content-type')?.split(';')[0].toLowerCase();
+    const resolvedUrl = safeUrl(imageResponse.url || candidate);
+    if (resolvedUrl && isSupportedImageMime(mime)) return { url: resolvedUrl, mime: mime! };
+  }
+  return null;
 }
 
 export async function resolveLinkedGifAttachments(text: string): Promise<PromptMediaAttachment[]> {
@@ -78,10 +107,11 @@ export async function resolveLinkedGifAttachments(text: string): Promise<PromptM
   for (const rawUrl of urls.slice(0, 10)) {
     const url = rawUrl.replace(/[),.!?]+$/g, '');
     if (seen.has(url)) continue;
-    const resolved = await resolveGifLink(url);
+    const resolved = await resolveLinkedMedia(url);
     if (!resolved) continue;
     seen.add(url);
-    result.push({ url: resolved.url, name: 'linked.gif', mime: resolved.mime });
+    const extension = resolved.mime === 'image/gif' ? 'gif' : resolved.mime === 'image/webp' ? 'webp' : resolved.mime === 'image/png' ? 'png' : 'jpg';
+    result.push({ url: resolved.url, name: `linked.${extension}`, mime: resolved.mime });
   }
   return result;
 }
