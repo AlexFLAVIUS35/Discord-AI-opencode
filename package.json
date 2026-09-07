@@ -33,6 +33,7 @@
     "open": "^10.1.0",
     "opencode-antigravity-auth": "^1.4.6",
     "picocolors": "^1.1.1",
+    "sharp": "^0.34.5",
     "undici": "^6.23.0",
     "update-notifier": "^7.3.1"
   },
