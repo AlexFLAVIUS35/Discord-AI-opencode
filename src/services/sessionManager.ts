@@ -2,6 +2,7 @@ import type { SSEClient } from "./sseClient.js";
 import * as dataStore from "./dataStore.js";
 import { sanitizeModel } from "../utils/stringUtils.js";
 import { getAuthHeaders, assertNotAuthError } from "./serverAuth.js";
+import sharp from "sharp";
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 const threadSseClients = new Map<string, SSEClient>();
@@ -89,32 +90,46 @@ async function responseToMedia(response: Response): Promise<{ url: string; mime:
   return { url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`, mime: mime! };
 }
 
-function discordGifPngUrl(value: string): string | null {
+function isDiscordGifUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    if (url.hostname.toLowerCase() !== 'cdn.discordapp.com') return null;
-    if (!/\.gif$/i.test(url.pathname)) return null;
-    // Discord's media proxy can serve a GIF as a static PNG. This keeps
-    // animated GIF bytes away from vision providers that only accept stills.
-    url.hostname = 'media.discordapp.net';
-    url.search = '?format=png';
-    return safeUrl(url.href) ?? null;
-  } catch { return null; }
+    return url.hostname.toLowerCase() === 'cdn.discordapp.com' && /\.gif$/i.test(url.pathname);
+  } catch { return false; }
+}
+
+async function discordGifToPng(response: Response): Promise<{ url: string; mime: string } | null> {
+  try {
+    const contentLength = Number(response.headers.get('content-length') ?? 0);
+    if (contentLength > MAX_MEDIA_BYTES) return null;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
+
+    // Decode only the first frame locally. This avoids relying on Discord's
+    // media proxy and guarantees the vision provider receives a PNG.
+    const png = await sharp(bytes, { animated: true, page: 0 }).png().toBuffer();
+    if (png.byteLength > MAX_MEDIA_BYTES) return null;
+    return { url: `data:image/png;base64,${png.toString('base64')}`, mime: 'image/png' };
+  } catch (error) {
+    console.error('[Media] Failed to convert Discord GIF to PNG:', error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 
 async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: string } | null> {
-  const discordPng = discordGifPngUrl(url);
-  if (discordPng) {
-    const pngResponse = await fetchExternal(discordPng);
-    if (pngResponse?.ok) {
-      const png = await responseToMedia(pngResponse);
-      if (png?.mime === 'image/png') return png;
-    }
+  const response = await fetchExternal(url);
+  if (!response || !response.ok) {
+    console.error(`[Media] Failed to fetch linked media: ${url} (${response?.status ?? 'network error'})`);
+    return null;
   }
 
-  const response = await fetchExternal(url);
-  if (!response || !response.ok) return null;
   const responseMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+
+  if (isDiscordGifUrl(url) && responseMime === 'image/gif') {
+    const png = await discordGifToPng(response);
+    if (png) return png;
+    return null;
+  }
+
   if (isSupportedImageMime(responseMime)) return responseToMedia(response);
   if (!responseMime?.includes('html') && !responseMime?.includes('xhtml')) return null;
   const contentLength = Number(response.headers.get('content-length') ?? 0);
