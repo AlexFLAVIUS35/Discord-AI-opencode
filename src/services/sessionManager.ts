@@ -5,8 +5,6 @@ import { getAuthHeaders, assertNotAuthError } from "./serverAuth.js";
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 const threadSseClients = new Map<string, SSEClient>();
-// Active mode may intentionally have multiple independent responses in flight.
-// Keep this set for compatibility/observability, but do not use it as a global mutex.
 const activeExecutions = new Set<string>();
 
 function jsonHeaders(): Record<string, string> { return { "Content-Type": "application/json", ...getAuthHeaders() }; }
@@ -21,6 +19,73 @@ export async function createSession(port: number): Promise<string> {
 }
 function parseModelString(model: string): { providerID: string; modelID: string } | null { const clean = sanitizeModel(model); const slashIndex = clean.indexOf("/"); if (slashIndex === -1) return null; return { providerID: clean.slice(0, slashIndex), modelID: clean.slice(slashIndex + 1) }; }
 export interface PromptMediaAttachment { url: string; name: string; mime?: string | null; }
+
+const GIF_LINK_HOSTS = new Set(["tenor.com", "www.tenor.com", "tenor.co", "www.tenor.co", "klipy.com", "www.klipy.com", "klipy.app", "www.klipy.app"]);
+
+function isSupportedImageMime(mime: string | null | undefined): boolean {
+  return ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes((mime ?? '').split(';')[0].toLowerCase());
+}
+
+function extractMetaImage(html: string): string | null {
+  const patterns = [
+    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["'][^>]*>/i,
+    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["'][^>]*>/i,
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) {
+      try { return new URL(match[1], 'https://example.com').href; } catch { }
+    }
+  }
+  return null;
+}
+
+async function resolveGifLink(url: string): Promise<{ url: string; mime?: string } | null> {
+  try {
+    const parsed = new URL(url);
+    if (!GIF_LINK_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 Leeha/1.0' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!response.ok) return null;
+    const finalMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+    if (isSupportedImageMime(finalMime)) return { url: response.url || url, mime: finalMime! };
+    const html = await response.text();
+    const imageUrl = extractMetaImage(html);
+    if (!imageUrl) return null;
+    const imageResponse = await fetch(imageUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 Leeha/1.0', Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!imageResponse.ok) return null;
+    const mime = imageResponse.headers.get('content-type')?.split(';')[0].toLowerCase();
+    return isSupportedImageMime(mime) ? { url: imageResponse.url || imageUrl, mime: mime! } : null;
+  } catch (error) {
+    console.error(`[Media] Failed to resolve GIF link ${url}:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+export async function resolveLinkedGifAttachments(text: string): Promise<PromptMediaAttachment[]> {
+  const urls = text.match(/https?:\/\/[^\s<>]+/gi) ?? [];
+  const result: PromptMediaAttachment[] = [];
+  const seen = new Set<string>();
+  for (const rawUrl of urls.slice(0, 10)) {
+    const url = rawUrl.replace(/[),.!?]+$/g, '');
+    if (seen.has(url)) continue;
+    const resolved = await resolveGifLink(url);
+    if (!resolved) continue;
+    seen.add(url);
+    result.push({ url: resolved.url, name: 'linked.gif', mime: resolved.mime });
+  }
+  return result;
+}
+
 async function mediaParts(attachments: PromptMediaAttachment[]): Promise<{ type: string; mime: string; url: string }[]> {
   const parts: { type: string; mime: string; url: string }[] = [];
   for (const attachment of attachments.slice(0, 10)) {
@@ -29,10 +94,8 @@ async function mediaParts(attachments: PromptMediaAttachment[]): Promise<{ type:
       const contentLength = Number(response.headers.get('content-length') ?? 0); if (contentLength > MAX_MEDIA_BYTES) continue;
       const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > MAX_MEDIA_BYTES) continue;
       const mime = attachment.mime || response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream';
-      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) continue;
-      let binary = ''; const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
-      parts.push({ type: 'file', mime, url: `data:${mime};base64,${Buffer.from(binary, 'binary').toString('base64')}` });
+      if (!isSupportedImageMime(mime)) continue;
+      parts.push({ type: 'file', mime, url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}` });
     } catch (error) { console.error(`[Media] Failed to download ${attachment.name}:`, error instanceof Error ? error.message : error); }
   }
   return parts;
