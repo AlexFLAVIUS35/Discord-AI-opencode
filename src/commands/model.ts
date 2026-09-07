@@ -1,5 +1,5 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, AutocompleteInteraction, MessageFlags, ThreadChannel } from 'discord.js';
-import { execSync, exec } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import * as dataStore from '../services/dataStore.js';
 import type { Command } from './index.js';
 import { sanitizeModel } from '../utils/stringUtils.js';
@@ -16,23 +16,51 @@ let cacheTimestamp = 0;
 let refreshInFlight = false;
 const CACHE_TTL_MS = 30_000;
 
+function normalizeInputCapabilities(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
+  if (value && typeof value === 'object') {
+    return Object.entries(value)
+      .filter(([, enabled]) => enabled === true)
+      .map(([name]) => name);
+  }
+  if (typeof value === 'string') return [value];
+  return [];
+}
+
 function parseVerboseModels(output: string): ModelInfo[] {
   const result: ModelInfo[] = [];
-  const lines = output.split('\n');
+  const lines = output.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/);
   let currentId: string | undefined;
-  let currentInput: string[] = [];
+  let jsonLines: string[] = [];
+  let depth = 0;
+  let inJson = false;
 
   const flush = () => {
-    if (currentId) result.push({ id: currentId, input: currentInput });
+    if (!currentId) return;
+
+    let input: string[] = [];
+    if (jsonLines.length) {
+      try {
+        const metadata = JSON.parse(jsonLines.join('\n')) as { capabilities?: { input?: unknown } };
+        input = normalizeInputCapabilities(metadata.capabilities?.input);
+      } catch {
+        // Keep the model even if one metadata block is malformed.
+      }
+    }
+
+    result.push({ id: currentId, input });
     currentId = undefined;
-    currentInput = [];
+    jsonLines = [];
+    depth = 0;
+    inJson = false;
   };
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    if (line.includes('/') && !line.startsWith('{') && !line.startsWith('"') && !line.startsWith('}')) {
+    const looksLikeModelId = line.includes('/') && !line.startsWith('{') && !line.startsWith('"') && !line.startsWith('}') && !line.startsWith('[');
+    if (looksLikeModelId) {
       flush();
       const id = sanitizeModel(line);
       if (id.includes('/')) currentId = id;
@@ -40,10 +68,17 @@ function parseVerboseModels(output: string): ModelInfo[] {
     }
 
     if (!currentId) continue;
-    const match = line.match(/^"input"\s*:\s*\[([^\]]*)\]/);
-    if (!match) continue;
-    currentInput = [...match[1].matchAll(/"([^\"]+)"/g)].map(m => m[1]);
+
+    jsonLines.push(rawLine);
+    for (const char of rawLine) {
+      if (char === '{') depth++;
+      else if (char === '}') depth--;
+    }
+    inJson = true;
+
+    if (inJson && depth === 0) flush();
   }
+
   flush();
   return result;
 }
@@ -60,14 +95,25 @@ async function loadModelsFromServers(): Promise<ModelInfo[]> {
       if (!response.ok) continue;
 
       const payload = await response.json() as {
-        all?: Record<string, { models?: Record<string, { capabilities?: { input?: string[] } }> }>;
+        all?: Record<string, { models?: Record<string, { capabilities?: { input?: unknown } }> }> | Array<{ id?: string; models?: Record<string, { capabilities?: { input?: unknown } }> }>;
       };
 
-      for (const [providerId, provider] of Object.entries(payload.all ?? {})) {
-        for (const [modelId, model] of Object.entries(provider.models ?? {})) {
-          const id = sanitizeModel(`${providerId}/${modelId}`);
-          if (!id.includes('/')) continue;
-          result.set(id, { id, input: model.capabilities?.input ?? [] });
+      if (Array.isArray(payload.all)) {
+        for (const provider of payload.all) {
+          if (!provider.id) continue;
+          for (const [modelId, model] of Object.entries(provider.models ?? {})) {
+            const id = sanitizeModel(`${provider.id}/${modelId}`);
+            if (!id.includes('/')) continue;
+            result.set(id, { id, input: normalizeInputCapabilities(model.capabilities?.input) });
+          }
+        }
+      } else {
+        for (const [providerId, provider] of Object.entries(payload.all ?? {})) {
+          for (const [modelId, model] of Object.entries(provider.models ?? {})) {
+            const id = sanitizeModel(`${providerId}/${modelId}`);
+            if (!id.includes('/')) continue;
+            result.set(id, { id, input: normalizeInputCapabilities(model.capabilities?.input) });
+          }
         }
       }
     } catch { }
