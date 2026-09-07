@@ -10,10 +10,6 @@ import { buildDiscordContext } from '../services/discordContextService.js';
 import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE, applyAIEnumerationClassification, getEnumerationMaxRequested } from '../utils/requestGuard.js';
 import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
 
-// Discord exposes typing-start events, but no reliable typing-stop event.
-// A Discord typing indicator is short-lived unless more typing-start events arrive.
-// Treat the last typing event as the start of a conservative 10s activity window,
-// then require an additional 3s of silence before sending the active turn to OpenCode.
 const DISCORD_TYPING_ACTIVITY_MS = 10_000;
 const ACTIVE_SILENCE_DELAY_MS = 3_000;
 
@@ -35,6 +31,22 @@ function getImageAttachments(messages: Message[]): RunPromptMedia[] {
   return result;
 }
 
+async function getMediaAttachments(messages: Message[]): Promise<RunPromptMedia[]> {
+  const result = getImageAttachments(messages);
+  if (result.length >= 10) return result;
+  const seen = new Set(result.map(media => media.url));
+  for (const message of messages) {
+    const linked = await sessionManager.resolveLinkedGifAttachments(message.content);
+    for (const media of linked) {
+      if (seen.has(media.url) || result.length >= 10) continue;
+      seen.add(media.url);
+      result.push(media);
+    }
+    if (result.length >= 10) break;
+  }
+  return result;
+}
+
 async function flushActiveTurn(conversationId: string): Promise<void> {
   const pending = pendingActiveTurns.get(conversationId);
   if (!pending) return;
@@ -45,7 +57,7 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
   try {
     const discordContext = await buildDiscordContext(latest.message);
     const burst = messages.length > 1 ? `\n\n[Messages received during the listening window]\n${messages.map(item => `[${item.message.id}] ${item.message.member?.displayName ?? item.message.author.globalName ?? item.message.author.username} (${item.userId}): ${item.prompt}`).join('\n')}` : '';
-    const media = getImageAttachments(messages.map(item => item.message));
+    const media = await getMediaAttachments(messages.map(item => item.message));
     const contextualPrompt = discordContext ? `${discordContext}${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}` : `${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`;
     if (isBusy(conversationId) || sessionManager.isExecutionActive(conversationId)) {
       dataStore.addToQueue(conversationId, { prompt: contextualPrompt, userId: latest.userId, timestamp: Date.now() }); return;
@@ -59,7 +71,6 @@ function scheduleAfterTypingSilence(conversationId: string, pending: PendingActi
   const lastTyping = pending.lastTypingAt;
   const now = Date.now();
   const typingWindowRemaining = lastTyping ? Math.max(0, DISCORD_TYPING_ACTIVITY_MS - (now - lastTyping)) : 0;
-  // Once Discord's typing activity window has elapsed, wait a further 3 seconds.
   const delay = typingWindowRemaining + ACTIVE_SILENCE_DELAY_MS;
   pending.timer = setTimeout(() => {
     const latestTyping = recentTypingAt.get(conversationId) ?? pending.lastTypingAt;
@@ -118,7 +129,8 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   const isVoiceMessage = !prompt && isVoiceEnabled() && message.flags.has(MessageFlags.IsVoiceMessage);
   const voiceAttachment = isVoiceMessage ? message.attachments.first() : undefined;
   const hasImageAttachment = [...message.attachments.values()].some(a => ['image/png','image/jpeg','image/gif','image/webp'].includes(a.contentType?.split(';')[0]?.toLowerCase() ?? ''));
-  if (!prompt && !voiceAttachment && !hasImageAttachment) return;
+  const hasGifLink = /https?:\/\/[^\s<>]*(?:tenor\.com|tenor\.co|klipy\.com|klipy\.app)[^\s<>]*/i.test(prompt);
+  if (!prompt && !voiceAttachment && !hasImageAttachment && !hasGifLink) return;
   if (message.client.user) prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
   if (prompt) {
     const previousMaxRequested = getEnumerationMaxRequested(enumerationScope);
