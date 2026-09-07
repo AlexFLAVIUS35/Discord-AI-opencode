@@ -3,37 +3,125 @@ import { execSync, exec } from 'node:child_process';
 import * as dataStore from '../services/dataStore.js';
 import type { Command } from './index.js';
 import { sanitizeModel } from '../utils/stringUtils.js';
+import { getAllInstances } from '../services/serveManager.js';
+import { getAuthHeaders } from '../services/serverAuth.js';
 
-let cachedModels: string[] = [];
+type ModelInfo = {
+  id: string;
+  input: string[];
+};
+
+let cachedModels: ModelInfo[] = [];
 let cacheTimestamp = 0;
 let refreshInFlight = false;
 const CACHE_TTL_MS = 30_000;
 
-function loadModels(force = false): string[] {
+function parseVerboseModels(output: string): ModelInfo[] {
+  const result: ModelInfo[] = [];
+  const lines = output.split('\n');
+  let currentId: string | undefined;
+  let currentInput: string[] = [];
+
+  const flush = () => {
+    if (currentId) result.push({ id: currentId, input: currentInput });
+    currentId = undefined;
+    currentInput = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    if (line.includes('/') && !line.startsWith('{') && !line.startsWith('"') && !line.startsWith('}')) {
+      flush();
+      const id = sanitizeModel(line);
+      if (id.includes('/')) currentId = id;
+      continue;
+    }
+
+    if (!currentId) continue;
+    const match = line.match(/^"input"\s*:\s*\[([^\]]*)\]/);
+    if (!match) continue;
+    currentInput = [...match[1].matchAll(/"([^\"]+)"/g)].map(m => m[1]);
+  }
+  flush();
+  return result;
+}
+
+async function loadModelsFromServers(): Promise<ModelInfo[]> {
+  const result = new Map<string, ModelInfo>();
+
+  for (const instance of getAllInstances()) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${instance.port}/provider`, {
+        headers: getAuthHeaders(),
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!response.ok) continue;
+
+      const payload = await response.json() as {
+        all?: Record<string, { models?: Record<string, { capabilities?: { input?: string[] } }> }>;
+      };
+
+      for (const [providerId, provider] of Object.entries(payload.all ?? {})) {
+        for (const [modelId, model] of Object.entries(provider.models ?? {})) {
+          const id = sanitizeModel(`${providerId}/${modelId}`);
+          if (!id.includes('/')) continue;
+          result.set(id, { id, input: model.capabilities?.input ?? [] });
+        }
+      }
+    } catch { }
+  }
+
+  return [...result.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function loadModelsFromCli(force = false): ModelInfo[] {
   try {
-    const output = execSync(force ? 'opencode models --refresh' : 'opencode models', { encoding: 'utf-8', timeout: 30000 });
-    cachedModels = output.split('\n').map(sanitizeModel).filter(m => m && m.includes('/'));
-    cacheTimestamp = Date.now();
-  } catch { }
-  return cachedModels;
+    const output = execSync(`opencode models --verbose${force ? ' --refresh' : ''}`, { encoding: 'utf-8', timeout: 30000 });
+    return parseVerboseModels(output);
+  } catch {
+    return [];
+  }
+}
+
+async function refreshCatalog(force = false): Promise<ModelInfo[]> {
+  if (refreshInFlight) return cachedModels;
+  refreshInFlight = true;
+  try {
+    if (force) {
+      try { execSync('opencode models --refresh', { encoding: 'utf-8', timeout: 30000 }); } catch { }
+    }
+
+    let models = await loadModelsFromServers();
+    if (!models.length) models = loadModelsFromCli(force);
+
+    if (models.length) {
+      cachedModels = models;
+      cacheTimestamp = Date.now();
+    }
+    return cachedModels;
+  } finally {
+    refreshInFlight = false;
+  }
 }
 
 function refreshCacheAsync(): void {
   if (refreshInFlight) return;
-  refreshInFlight = true;
-  exec('opencode models', { encoding: 'utf-8', timeout: 15000 }, (error, stdout) => {
-    refreshInFlight = false;
-    if (!error && stdout) {
-      cachedModels = stdout.split('\n').map(sanitizeModel).filter(m => m && m.includes('/'));
-      cacheTimestamp = Date.now();
-    }
-  });
+  void refreshCatalog(false);
 }
 
 export function getCachedModels(): string[] {
-  if (cachedModels.length === 0) return loadModels();
-  if (Date.now() - cacheTimestamp > CACHE_TTL_MS) refreshCacheAsync();
-  return cachedModels;
+  if (cachedModels.length === 0) {
+    const models = loadModelsFromCli();
+    if (models.length) {
+      cachedModels = models;
+      cacheTimestamp = Date.now();
+    }
+  } else if (Date.now() - cacheTimestamp > CACHE_TTL_MS) {
+    refreshCacheAsync();
+  }
+  return cachedModels.map(model => model.id);
 }
 
 function getEffectiveChannelId(interaction: ChatInputCommandInteraction): string {
@@ -41,9 +129,8 @@ function getEffectiveChannelId(interaction: ChatInputCommandInteraction): string
   return channel?.isThread() ? (channel as ThreadChannel).parentId ?? interaction.channelId : interaction.channelId;
 }
 
-function likelyMediaModels(models: string[]): string[] {
-  const terms = ['vision', 'vl', 'gemini', 'claude', 'gpt-4o', 'gpt-5', 'qwen', 'kimi', 'minimax'];
-  return models.filter(name => terms.some(term => name.toLowerCase().includes(term)));
+function modelsWithInput(input: string): ModelInfo[] {
+  return cachedModels.filter(model => model.input.includes(input));
 }
 
 export const model: Command = {
@@ -51,8 +138,9 @@ export const model: Command = {
     .setName('model')
     .setDescription('Manage AI models for the current channel')
     .addSubcommand(subcommand => subcommand.setName('list').setDescription('List all available models'))
-    .addSubcommand(subcommand => subcommand.setName('media').setDescription('Show models likely to support images/GIFs'))
-    .addSubcommand(subcommand => subcommand.setName('refresh').setDescription('Refresh the OpenCode model catalog'))
+    .addSubcommand(subcommand => subcommand.setName('media').setDescription('Show models declared to support image input'))
+    .addSubcommand(subcommand => subcommand.setName('text').setDescription('Show models declared to support text input'))
+    .addSubcommand(subcommand => subcommand.setName('refresh').setDescription('Refresh the OpenCode model catalog and metadata'))
     .addSubcommand(subcommand => subcommand.setName('set').setDescription('Set the exact OpenCode model for this channel').addStringOption(option => option.setName('name').setDescription('Exact provider/model ID').setRequired(true).setAutocomplete(true))) as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction) {
@@ -60,15 +148,25 @@ export const model: Command = {
 
     if (subcommand === 'refresh') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const models = loadModels(true);
-      await interaction.editReply(models.length ? `✅ Model catalog refreshed. Found **${models.length}** models.` : '❌ Failed to refresh the OpenCode model catalog.');
+      const models = await refreshCatalog(true);
+      const mediaCount = models.filter(model => model.input.includes('image')).length;
+      const textCount = models.filter(model => model.input.includes('text')).length;
+      await interaction.editReply(models.length
+        ? `✅ Model catalog refreshed. Found **${models.length}** models (**${textCount}** text, **${mediaCount}** image-capable).`
+        : '❌ Failed to refresh the OpenCode model catalog.');
       return;
     }
 
-    if (subcommand === 'media') {
+    if (subcommand === 'media' || subcommand === 'text') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const models = likelyMediaModels(getCachedModels());
-      await interaction.editReply(models.length ? `### 🖼️ Likely media-capable models\n\n${models.map(m => `• \`${m}\``).join('\n')}`.slice(0, 1900) : 'No likely media-capable models detected. Try `/model refresh` first.');
+      if (cachedModels.length === 0 || Date.now() - cacheTimestamp > CACHE_TTL_MS) await refreshCatalog(false);
+
+      const input = subcommand === 'media' ? 'image' : 'text';
+      const models = modelsWithInput(input);
+      const label = subcommand === 'media' ? '🖼️ Image-capable models' : '📝 Text-capable models';
+      await interaction.editReply(models.length
+        ? `### ${label}\n\n${models.map(model => `• \`${model.id}\``).join('\n')}`.slice(0, 1900)
+        : `No models in the OpenCode catalog declare **${input}** input support. Try \`/model refresh\` first.`);
       return;
     }
 
