@@ -112,21 +112,98 @@ async function discordGifToPng(response: Response): Promise<{ url: string; mime:
   }
 }
 
+function isKlipyPageUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.hostname.toLowerCase() === 'klipy.com' && /^\/gifs\//i.test(url.pathname);
+  } catch { return false; }
+}
+
+function klipySlug(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const match = url.pathname.match(/^\/gifs\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  } catch { return null; }
+}
+
+function findKlipyMediaUrl(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findKlipyMediaUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  const object = value as Record<string, unknown>;
+  for (const key of ['gif', 'mediumgif', 'tinygif', 'nanogif', 'url']) {
+    const candidate = object[key];
+    if (typeof candidate === 'string' && /^https:\/\/static\d?\.klipy\.com\/.+\.(?:gif|webp|png|jpe?g)(?:[?#].*)?$/i.test(candidate)) return candidate;
+    if (candidate && typeof candidate === 'object') {
+      const found = findKlipyMediaUrl(candidate);
+      if (found) return found;
+    }
+  }
+  for (const candidate of Object.values(object)) {
+    const found = findKlipyMediaUrl(candidate);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function resolveKlipyGif(url: string): Promise<{ url: string; mime: string } | null> {
+  const appKey = process.env.KLIPY_API_KEY ?? process.env.KLIPY_APP_KEY;
+  const slug = klipySlug(url);
+  if (!appKey || !slug) {
+    console.error(`[Media] KLIPY link needs KLIPY_API_KEY/KLIPY_APP_KEY: ${url}`);
+    return null;
+  }
+  try {
+    const endpoint = new URL(`https://api.klipy.com/api/v1/${encodeURIComponent(appKey)}/gifs/items`);
+    endpoint.searchParams.set('slugs', slug);
+    const response = await fetch(endpoint, {
+      headers: { 'User-Agent': 'Leeha/1.0', Accept: 'application/json' },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!response.ok) {
+      console.error(`[Media] KLIPY API failed for ${url}: ${response.status} ${response.statusText}`);
+      return null;
+    }
+    const data: unknown = await response.json();
+    const mediaUrl = findKlipyMediaUrl(data);
+    if (!mediaUrl) {
+      console.error(`[Media] KLIPY API returned no GIF media for ${url}`);
+      return null;
+    }
+    const mediaResponse = await fetchExternal(mediaUrl);
+    if (!mediaResponse || !mediaResponse.ok) {
+      console.error(`[Media] Failed to fetch KLIPY media: ${mediaUrl} (${mediaResponse?.status ?? 'network error'})`);
+      return null;
+    }
+    return responseToMedia(mediaResponse);
+  } catch (error) {
+    console.error('[Media] Failed to resolve KLIPY GIF:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
 async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: string } | null> {
+  if (isKlipyPageUrl(url)) {
+    const klipyMedia = await resolveKlipyGif(url);
+    if (klipyMedia) return klipyMedia;
+  }
   const response = await fetchExternal(url);
   if (!response || !response.ok) {
     console.error(`[Media] Failed to fetch linked media: ${url} (${response?.status ?? 'network error'})`);
     return null;
   }
-
   const responseMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
-
   if (isDiscordGifUrl(url) && responseMime === 'image/gif') {
     const png = await discordGifToPng(response);
     if (png) return png;
     return null;
   }
-
   if (isSupportedImageMime(responseMime)) return responseToMedia(response);
   if (!responseMime?.includes('html') && !responseMime?.includes('xhtml')) return null;
   const contentLength = Number(response.headers.get('content-length') ?? 0);
