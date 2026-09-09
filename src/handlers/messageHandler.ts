@@ -13,6 +13,8 @@ import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
 const DISCORD_TYPING_ACTIVITY_MS = 10_000;
 const ACTIVE_SILENCE_DELAY_MS = 3_000;
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+const DISCORD_FETCH_TIMEOUT_MS = 12_000;
+const DISCORD_FETCH_ATTEMPTS = 4;
 
 const recentTypingAt = new Map<string, number>();
 
@@ -20,30 +22,85 @@ type PendingActiveMessage = { message: Message; prompt: string; userId: string; 
 type PendingActiveTurn = { channel: TextBasedChannel; messages: PendingActiveMessage[]; timer: NodeJS.Timeout; lastTypingAt: number };
 const pendingActiveTurns = new Map<string, PendingActiveTurn>();
 
+function isSupportedImageMime(mime: string | null | undefined): boolean {
+  return ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes((mime ?? '').split(';')[0].toLowerCase());
+}
+
+function discordCdnCandidates(value: string): string[] {
+  try {
+    const original = new URL(value);
+    if (original.protocol !== 'http:' && original.protocol !== 'https:') return [];
+    const candidates = [original.href];
+    const host = original.hostname.toLowerCase();
+    if (host === 'cdn.discordapp.com') {
+      const proxy = new URL(original.href);
+      proxy.hostname = 'media.discordapp.net';
+      candidates.push(proxy.href);
+    } else if (host === 'media.discordapp.net') {
+      const cdn = new URL(original.href);
+      cdn.hostname = 'cdn.discordapp.com';
+      candidates.push(cdn.href);
+    }
+    return [...new Set(candidates)];
+  } catch {
+    return [];
+  }
+}
+
+function sniffImageMime(bytes: Uint8Array): string | null {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return 'image/gif';
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+  return null;
+}
+
+async function fetchDiscordAttachment(url: string): Promise<{ response: Response; bytes: Uint8Array } | null> {
+  const candidates = discordCdnCandidates(url);
+  if (!candidates.length) return null;
+  let lastStatus = '';
+  for (let attempt = 0; attempt < DISCORD_FETCH_ATTEMPTS; attempt++) {
+    for (const candidate of candidates) {
+      try {
+        const response = await fetch(candidate, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36 Leeha/1.0',
+            Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            Referer: 'https://discord.com/',
+            Origin: 'https://discord.com',
+            'Cache-Control': 'no-cache',
+          },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(DISCORD_FETCH_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+          lastStatus = `${response.status} ${response.statusText}`;
+          continue;
+        }
+        const contentLength = Number(response.headers.get('content-length') ?? 0);
+        if (contentLength > MAX_MEDIA_BYTES) return null;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
+        return { response, bytes };
+      } catch (error) {
+        lastStatus = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (attempt + 1 < DISCORD_FETCH_ATTEMPTS) await new Promise(resolve => setTimeout(resolve, 350 * 2 ** attempt));
+  }
+  console.error(`[Media] Discord CDN fetch exhausted for ${url} (${lastStatus || 'unknown error'})`);
+  return null;
+}
+
 async function downloadDiscordAttachment(attachment: { url: string; name: string; contentType?: string | null }): Promise<RunPromptMedia | null> {
   const declaredMime = attachment.contentType?.split(';')[0]?.toLowerCase();
-  if (!declaredMime || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(declaredMime)) return null;
+  if (!declaredMime || !isSupportedImageMime(declaredMime)) return null;
   try {
-    const response = await fetch(attachment.url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 Leeha/1.0',
-        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        Referer: 'https://discord.com/',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      console.error(`[Media] Discord attachment fetch failed: ${attachment.url} (${response.status} ${response.statusText})`);
-      return { url: attachment.url, name: attachment.name, mime: declaredMime };
-    }
-    const contentLength = Number(response.headers.get('content-length') ?? 0);
-    if (contentLength > MAX_MEDIA_BYTES) return null;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
-    const responseMime = response.headers.get('content-type')?.split(';')[0]?.toLowerCase();
-    const mime = responseMime && ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(responseMime) ? responseMime : declaredMime;
-    return { url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`, name: attachment.name, mime };
+    const fetched = await fetchDiscordAttachment(attachment.url);
+    if (!fetched) return { url: attachment.url, name: attachment.name, mime: declaredMime };
+    const responseMime = fetched.response.headers.get('content-type')?.split(';')[0]?.toLowerCase();
+    const mime = isSupportedImageMime(responseMime) ? responseMime! : sniffImageMime(fetched.bytes) ?? declaredMime;
+    return { url: `data:${mime};base64,${Buffer.from(fetched.bytes).toString('base64')}`, name: attachment.name, mime };
   } catch (error) {
     console.error(`[Media] Discord attachment download failed: ${attachment.url}`, error instanceof Error ? error.message : error);
     return { url: attachment.url, name: attachment.name, mime: declaredMime };
@@ -55,7 +112,7 @@ async function getImageAttachments(messages: Message[]): Promise<RunPromptMedia[
   const seen = new Set<string>();
   for (const message of messages) for (const attachment of message.attachments.values()) {
     const mime = attachment.contentType?.split(';')[0]?.toLowerCase();
-    if (!mime || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime) || seen.has(attachment.url)) continue;
+    if (!mime || !isSupportedImageMime(mime) || seen.has(attachment.url)) continue;
     seen.add(attachment.url);
     const media = await downloadDiscordAttachment({ url: attachment.url, name: attachment.name, contentType: mime });
     if (media) result.push(media);
@@ -161,7 +218,7 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   let prompt = message.content.trim();
   const isVoiceMessage = !prompt && isVoiceEnabled() && message.flags.has(MessageFlags.IsVoiceMessage);
   const voiceAttachment = isVoiceMessage ? message.attachments.first() : undefined;
-  const hasImageAttachment = [...message.attachments.values()].some(a => ['image/png','image/jpeg','image/gif','image/webp'].includes(a.contentType?.split(';')[0]?.toLowerCase() ?? ''));
+  const hasImageAttachment = [...message.attachments.values()].some(a => isSupportedImageMime(a.contentType?.split(';')[0]?.toLowerCase()));
   const hasGifLink = /https?:\/\/[^\s<>]*(?:tenor\.com|tenor\.co|klipy\.com|klipy\.app)[^\s<>]*/i.test(prompt);
   if (!prompt && !voiceAttachment && !hasImageAttachment && !hasGifLink) return;
   if (message.client.user) prompt = prompt.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
