@@ -146,7 +146,7 @@ async function discordGifToPng(response: Response): Promise<{ url: string; mime:
     if (contentLength > MAX_MEDIA_BYTES) return null;
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
-    const png = await sharp(bytes, { animated: true, page: 0 }).png().toBuffer();
+    const png = await sharp(bytes, { pages: 1, page: 0 }).png().toBuffer();
     if (png.byteLength > MAX_MEDIA_BYTES) return null;
     return { url: `data:image/png;base64,${png.toString('base64')}`, mime: 'image/png' };
   } catch (error) {
