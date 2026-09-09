@@ -1,6 +1,6 @@
 import { TextBasedChannel } from 'discord.js';
 import * as dataStore from './dataStore.js';
-import { runPrompt } from './executionService.js';
+import { runPrompt, type RunPromptMedia } from './executionService.js';
 import * as sessionManager from './sessionManager.js';
 import { transcribe } from './voiceService.js';
 import { isExcessiveEnumerationRequest, EXCESSIVE_ENUMERATION_MESSAGE } from '../utils/requestGuard.js';
@@ -17,6 +17,8 @@ export async function processNextInQueue(channel: TextBasedChannel, threadId: st
   dataStore.clearQueue(threadId);
 
   const parts: string[] = [];
+  const media: RunPromptMedia[] = [];
+  const seenMedia = new Set<string>();
   for (const next of pending) {
     let prompt = next.prompt;
 
@@ -37,12 +39,17 @@ export async function processNextInQueue(channel: TextBasedChannel, threadId: st
     }
 
     parts.push(`[${next.userId}] ${prompt}`);
+    for (const item of next.media ?? []) {
+      if (seenMedia.has(item.url) || media.length >= 10) continue;
+      seenMedia.add(item.url);
+      media.push(item);
+    }
   }
 
   if (!parts.length) return;
 
   const combinedPrompt = `[Queued Discord messages from different users — treat each user ID as a separate person. Respond to the conversation naturally rather than producing a separate response for every message.\n${parts.join('\n')}]`;
-  await runPrompt(channel, threadId, combinedPrompt, parentChannelId, first.userId);
+  await runPrompt(channel, threadId, combinedPrompt, parentChannelId, first.userId, undefined, media);
 }
 
 export function isBusy(threadId: string): boolean {
