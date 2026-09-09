@@ -156,6 +156,15 @@ export async function resolveModelId(modelName: string): Promise<string> {
   const requested = sanitizeModel(modelName.trim());
   if (!requested) return requested;
 
+  // Railway may have a persisted channel model from an older provider catalog.
+  // OpenCode currently exposes Gemini's image model without the legacy 302ai/
+  // provider prefix, so normalize this known stale ID before consulting the catalog.
+  if (requested === '302ai/gemini-2.5-flash-image') {
+    const corrected = 'gemini-2.5-flash-image';
+    console.log(`[Model Resolver] Remapped stale model ${requested} -> ${corrected}`);
+    return corrected;
+  }
+
   const models = await refreshCatalog(false);
   if (!models.length) return requested;
 
