@@ -152,6 +152,48 @@ async function refreshCatalog(force = false): Promise<ModelInfo[]> {
   }
 }
 
+export async function resolveModelId(modelName: string): Promise<string> {
+  const requested = sanitizeModel(modelName.trim());
+  if (!requested) return requested;
+
+  const models = await refreshCatalog(false);
+  if (!models.length) return requested;
+
+  const exact = models.find(model => model.id === requested);
+  if (exact) return exact.id;
+
+  // Older Leeha versions stored provider/model IDs that may no longer match
+  // the current OpenCode catalog. OpenCode model references are provider/model,
+  // so compare the model portion separately and recover the current provider.
+  const separator = requested.indexOf('/');
+  const legacyModelId = separator >= 0 ? requested.slice(separator + 1) : requested;
+  const candidates = models.filter(model => {
+    const currentSeparator = model.id.indexOf('/');
+    const currentModelId = currentSeparator >= 0 ? model.id.slice(currentSeparator + 1) : model.id;
+    return currentModelId === legacyModelId || currentModelId.endsWith(`/${legacyModelId}`);
+  });
+
+  if (candidates.length === 1) {
+    console.log(`[Model Resolver] Remapped stale model ${requested} -> ${candidates[0].id}`);
+    return candidates[0].id;
+  }
+
+  // If several providers expose the same model ID, prefer the same provider
+  // that was stored previously before falling back to the first catalog entry.
+  if (candidates.length > 1 && separator >= 0) {
+    const oldProvider = requested.slice(0, separator);
+    const sameProvider = candidates.find(model => model.id.startsWith(`${oldProvider}/`));
+    if (sameProvider) {
+      console.log(`[Model Resolver] Remapped stale model ${requested} -> ${sameProvider.id}`);
+      return sameProvider.id;
+    }
+    console.log(`[Model Resolver] Remapped stale model ${requested} -> ${candidates[0].id}`);
+    return candidates[0].id;
+  }
+
+  return requested;
+}
+
 function refreshCacheAsync(): void {
   if (refreshInFlight) return;
   void refreshCatalog(false);
@@ -240,7 +282,13 @@ export const model: Command = {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const availableModels = getCachedModels();
     if (availableModels.length > 0 && !availableModels.includes(modelName)) {
-      await interaction.editReply(`❌ Model \`${modelName}\` not found in the current OpenCode catalog.\nUse \`/model refresh\`, then try again.`);
+      const resolved = await resolveModelId(modelName);
+      if (resolved === modelName) {
+        await interaction.editReply(`❌ Model \`${modelName}\` not found in the current OpenCode catalog.\nUse \`/model refresh\`, then try again.`);
+        return;
+      }
+      dataStore.setChannelModel(channelId, resolved);
+      await interaction.editReply(`✅ Model for this channel set to \`${resolved}\` (updated from the stale ID).`);
       return;
     }
     dataStore.setChannelModel(channelId, modelName);
