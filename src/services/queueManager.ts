@@ -31,14 +31,16 @@ export async function processNextInQueue(channel: TextBasedChannel, threadId: st
         continue;
       }
     }
-    if (!prompt) continue;
 
-    if (isExcessiveEnumerationRequest(prompt)) {
+    const hasMedia = (next.media?.length ?? 0) > 0;
+    if (!prompt && !hasMedia) continue;
+
+    if (prompt && isExcessiveEnumerationRequest(prompt)) {
       try { await (channel as any).send(EXCESSIVE_ENUMERATION_MESSAGE); } catch { }
       continue;
     }
 
-    parts.push(`[${next.userId}] ${prompt}`);
+    parts.push(`[${next.userId}] ${prompt || '[Discord attachment]'}`);
     for (const item of next.media ?? []) {
       if (seenMedia.has(item.url) || media.length >= 10) continue;
       seenMedia.add(item.url);
