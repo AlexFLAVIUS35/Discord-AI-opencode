@@ -103,9 +103,6 @@ async function discordGifToPng(response: Response): Promise<{ url: string; mime:
     if (contentLength > MAX_MEDIA_BYTES) return null;
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
-
-    // Decode only the first frame locally. This avoids relying on Discord's
-    // media proxy and guarantees the vision provider receives a PNG.
     const png = await sharp(bytes, { animated: true, page: 0 }).png().toBuffer();
     if (png.byteLength > MAX_MEDIA_BYTES) return null;
     return { url: `data:image/png;base64,${png.toString('base64')}`, mime: 'image/png' };
@@ -162,10 +159,27 @@ export async function resolveLinkedGifAttachments(text: string): Promise<PromptM
   return result;
 }
 
+function decodeDataUrl(value: string): { bytes: Buffer; mime: string } | null {
+  const match = value.match(/^data:([^;,]+);base64,(.+)$/s);
+  if (!match) return null;
+  const mime = match[1].toLowerCase();
+  if (!isSupportedImageMime(mime)) return null;
+  try {
+    const bytes = Buffer.from(match[2], 'base64');
+    if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
+    return { bytes, mime };
+  } catch { return null; }
+}
+
 async function mediaParts(attachments: PromptMediaAttachment[]): Promise<{ type: string; mime: string; url: string }[]> {
   const parts: { type: string; mime: string; url: string }[] = [];
   for (const attachment of attachments.slice(0, 10)) {
     try {
+      const decoded = decodeDataUrl(attachment.url);
+      if (decoded) {
+        parts.push({ type: 'file', mime: decoded.mime, url: attachment.url });
+        continue;
+      }
       const response = await fetch(attachment.url); if (!response.ok) continue;
       const contentLength = Number(response.headers.get('content-length') ?? 0); if (contentLength > MAX_MEDIA_BYTES) continue;
       const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > MAX_MEDIA_BYTES) continue;
