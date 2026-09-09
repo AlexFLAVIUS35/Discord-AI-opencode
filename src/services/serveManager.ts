@@ -33,7 +33,7 @@ function formatSpawnError(error: Error, command: string, projectPath: string): s
   return spawnError.message || "Failed to spawn opencode process";
 }
 function isPortAvailable(port: number): Promise<boolean> { return new Promise((resolve) => { const server = new Server(); server.once("error", () => resolve(false)); server.once("listening", () => server.close(() => resolve(true))); server.listen(port, "127.0.0.1"); }); }
-async function isOrphanedServerRunning(port: number): Promise<boolean> { try { await fetch(`http://127.0.0.1:${port}/session`, { headers: getAuthHeaders(), signal: AbortSignal.timeout(1000) }); return true; } catch { return false; } }
+async function isOrphanedServerRunning(port: number): Promise<boolean> { try { await fetch(`http://127.0.0.1:${port}/global/health`, { headers: getAuthHeaders(), signal: AbortSignal.timeout(1000) }); return true; } catch { return false; } }
 async function findAvailablePort(): Promise<number> {
   const config = getPortConfig(); const min = config?.min ?? DEFAULT_PORT_MIN; const max = config?.max ?? DEFAULT_PORT_MAX;
   for (let port = min; port <= max; port++) { const usedPorts = new Set(Array.from(instances.values()).filter((i) => !i.exited).map((i) => i.port)); if (usedPorts.has(port)) continue; if (await isOrphanedServerRunning(port)) continue; if (await isPortAvailable(port)) return port; }
@@ -74,13 +74,27 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
 export function getPort(projectPath: string, _model?: string, storageEnabled = false): number | undefined { return instances.get(getInstanceKey(projectPath, storageEnabled))?.port; }
 export function stopServe(projectPath: string, _model?: string, storageEnabled = false): boolean { const key = getInstanceKey(projectPath, storageEnabled); const instance = instances.get(key); if (!instance) return false; instance.process.kill(); cleanupInstance(key); return true; }
 export async function waitForReady(port: number, timeout = 30000, projectPath?: string, _model?: string, storageEnabled = false): Promise<void> {
-  const start = Date.now(); const url = `http://127.0.0.1:${port}/session`; const key = projectPath ? getInstanceKey(projectPath, storageEnabled) : null;
+  const start = Date.now(); const url = `http://127.0.0.1:${port}/global/health`; const key = projectPath ? getInstanceKey(projectPath, storageEnabled) : null;
+  let lastStatus: number | null = null;
+  let lastError = "";
   while (Date.now() - start < timeout) {
     if (key) { const instance = instances.get(key); if (instance?.exited) { const errorMsg = instance.exitError || `opencode serve exited with code ${instance.exitCode}`; cleanupInstance(key); throw new Error(`opencode serve failed to start: ${errorMsg}`); } }
-    try { const response = await fetch(url, { headers: getAuthHeaders() }); if (response.ok) return; if (response.status === 401 || response.status === 403) { const hint = isAuthEnabled() ? "credentials were rejected by the opencode server. Verify the configured server credentials." : "opencode server requires authentication but credentials are not configured."; throw new Error(`opencode serve is running on port ${port} but ${hint}`); } } catch (err) { if (err instanceof Error && err.message.startsWith("opencode serve is running on port")) throw err; }
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders(), signal: AbortSignal.timeout(1000) });
+      lastStatus = response.status;
+      if (response.ok) return;
+      if (response.status === 401 || response.status === 403) {
+        const hint = isAuthEnabled() ? "credentials were rejected by the opencode server. Verify the configured server credentials." : "opencode server requires authentication but credentials are not configured.";
+        throw new Error(`opencode serve is running on port ${port} but ${hint}`);
+      }
+      lastError = `HTTP ${response.status} ${response.statusText}`;
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("opencode serve is running on port")) throw err;
+      lastError = err instanceof Error ? err.message : String(err);
+    }
     await new Promise((resolve) => setTimeout(resolve, READY_POLL_INTERVAL_MS));
   }
-  throw new Error(`Service at port ${port} failed to become ready within ${timeout}ms.`);
+  throw new Error(`Service at port ${port} failed health check within ${timeout}ms (last response: ${lastStatus ?? "none"}; ${lastError || "no response"}).`);
 }
 export function stopAll(): void { for (const [key, instance] of instances) { instance.process.kill(); cleanupInstance(key); } }
 export function getAllInstances(): Array<{ key: string; port: number }> { return Array.from(instances.entries()).map(([key, instance]) => ({ key, port: instance.port })); }
