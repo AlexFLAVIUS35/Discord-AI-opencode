@@ -8,7 +8,8 @@ export interface DataStore {
   projects: ProjectConfig[]; bindings: ChannelBinding[]; channelModels?: Record<string, string>; userPersonalities?: UserPersonality[];
   threadSessions?: ThreadSession[]; worktreeMappings?: WorktreeMapping[]; passthroughThreads?: PassthroughThread[]; queues?: Record<string, QueuedMessage[]>; queueSettings?: Record<string, QueueSettings>; memories?: MemoryEntry[];
 }
-export interface QueuedMessage { prompt: string; userId: string; timestamp: number; voiceAttachmentUrl?: string; voiceAttachmentSize?: number; }
+export interface QueuedMedia { url: string; name: string; mime?: string | null; }
+export interface QueuedMessage { prompt: string; userId: string; timestamp: number; voiceAttachmentUrl?: string; voiceAttachmentSize?: number; media?: QueuedMedia[]; }
 export interface QueueSettings { paused: boolean; continueOnFailure: boolean; freshContext: boolean; }
 export interface TextPart { id: string; sessionID: string; messageID: string; text: string; }
 export interface SSEEvent { type: string; properties: Record<string, unknown>; }
