@@ -12,6 +12,7 @@ import { classifyEnumerationRequest } from '../utils/aiEnumerationGuard.js';
 
 const DISCORD_TYPING_ACTIVITY_MS = 10_000;
 const ACTIVE_SILENCE_DELAY_MS = 3_000;
+const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 
 const recentTypingAt = new Map<string, number>();
 
@@ -19,20 +20,52 @@ type PendingActiveMessage = { message: Message; prompt: string; userId: string; 
 type PendingActiveTurn = { channel: TextBasedChannel; messages: PendingActiveMessage[]; timer: NodeJS.Timeout; lastTypingAt: number };
 const pendingActiveTurns = new Map<string, PendingActiveTurn>();
 
-function getImageAttachments(messages: Message[]): RunPromptMedia[] {
+async function downloadDiscordAttachment(attachment: { url: string; name: string; contentType?: string | null }): Promise<RunPromptMedia | null> {
+  const declaredMime = attachment.contentType?.split(';')[0]?.toLowerCase();
+  if (!declaredMime || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(declaredMime)) return null;
+  try {
+    const response = await fetch(attachment.url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 Leeha/1.0',
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        Referer: 'https://discord.com/',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      console.error(`[Media] Discord attachment fetch failed: ${attachment.url} (${response.status} ${response.statusText})`);
+      return { url: attachment.url, name: attachment.name, mime: declaredMime };
+    }
+    const contentLength = Number(response.headers.get('content-length') ?? 0);
+    if (contentLength > MAX_MEDIA_BYTES) return null;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
+    const responseMime = response.headers.get('content-type')?.split(';')[0]?.toLowerCase();
+    const mime = responseMime && ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(responseMime) ? responseMime : declaredMime;
+    return { url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`, name: attachment.name, mime };
+  } catch (error) {
+    console.error(`[Media] Discord attachment download failed: ${attachment.url}`, error instanceof Error ? error.message : error);
+    return { url: attachment.url, name: attachment.name, mime: declaredMime };
+  }
+}
+
+async function getImageAttachments(messages: Message[]): Promise<RunPromptMedia[]> {
   const result: RunPromptMedia[] = [];
   const seen = new Set<string>();
   for (const message of messages) for (const attachment of message.attachments.values()) {
     const mime = attachment.contentType?.split(';')[0]?.toLowerCase();
     if (!mime || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime) || seen.has(attachment.url)) continue;
-    seen.add(attachment.url); result.push({ url: attachment.url, name: attachment.name, mime });
+    seen.add(attachment.url);
+    const media = await downloadDiscordAttachment({ url: attachment.url, name: attachment.name, contentType: mime });
+    if (media) result.push(media);
     if (result.length >= 10) return result;
   }
   return result;
 }
 
 async function getMediaAttachments(messages: Message[]): Promise<RunPromptMedia[]> {
-  const result = getImageAttachments(messages);
+  const result = await getImageAttachments(messages);
   if (result.length >= 10) return result;
   const seen = new Set(result.map(media => media.url));
   for (const message of messages) {
@@ -60,7 +93,7 @@ async function flushActiveTurn(conversationId: string): Promise<void> {
     const media = await getMediaAttachments(messages.map(item => item.message));
     const contextualPrompt = discordContext ? `${discordContext}${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}` : `${burst}\n\n[Current user: ${latest.message.member?.displayName ?? latest.message.author.globalName ?? latest.message.author.username} (${latest.userId})]\n[Current user message]\n${latest.prompt}`;
     if (isBusy(conversationId) || sessionManager.isExecutionActive(conversationId)) {
-      dataStore.addToQueue(conversationId, { prompt: contextualPrompt, userId: latest.userId, timestamp: Date.now() }); return;
+      dataStore.addToQueue(conversationId, { prompt: contextualPrompt, userId: latest.userId, timestamp: Date.now(), media }); return;
     }
     await runPrompt(pending.channel, conversationId, contextualPrompt, latest.parentChannelId, latest.userId, undefined, media);
   } catch (error) { console.error('[Active Mode] Failed to flush listening window:', error instanceof Error ? error.message : error); }
@@ -145,9 +178,14 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     }
     if (!aiRecognized && isExcessiveEnumerationRequest(prompt, enumerationScope)) { await message.reply({ content: EXCESSIVE_ENUMERATION_MESSAGE }).catch(() => {}); return; }
   }
+  const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
   if (isBusy(conversationId) || sessionManager.isExecutionActive(conversationId)) {
-    if (voiceAttachment) dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
-    else dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now() });
+    if (voiceAttachment) {
+      dataStore.addToQueue(conversationId, { prompt: '', userId: message.author.id, timestamp: Date.now(), voiceAttachmentUrl: voiceAttachment.url, voiceAttachmentSize: voiceAttachment.size });
+    } else {
+      const media = hasImageAttachment ? await getMediaAttachments([message]) : [];
+      dataStore.addToQueue(conversationId, { prompt, userId: message.author.id, timestamp: Date.now(), media });
+    }
     return;
   }
   if (voiceAttachment) {
@@ -156,7 +194,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     catch (error) { console.error('[Voice STT] Transcription failed:', error instanceof Error ? error.message : error); await safeReact(message, '❌'); await message.reply({ content: error instanceof Error && error.message === 'AUTH_FAILURE' ? '❌ Transcription failed. Check the voice API key with `/voice status`.' : '❌ Voice transcription failed. Check server logs.' }).catch(() => {}); return; }
     if (!prompt.trim()) { await safeReact(message, '❌'); return; }
   }
-  const parentChannelId = message.channel.isThread() ? (message.channel.parentId ?? conversationId) : conversationId;
   if (!voiceAttachment) { scheduleActiveMessage(message, prompt, parentChannelId); return; }
   const discordContext = await buildDiscordContext(message);
   const contextualPrompt = discordContext ? `${discordContext}\n\n[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}` : `[Current user: ${message.member?.displayName ?? message.author.globalName ?? message.author.username} (${message.author.id})]\n[Current user message]\n${prompt}`;
