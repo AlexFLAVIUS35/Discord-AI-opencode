@@ -90,10 +90,53 @@ async function responseToMedia(response: Response): Promise<{ url: string; mime:
   return { url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`, mime: mime! };
 }
 
+function isDiscordAttachmentUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return (hostname === 'cdn.discordapp.com' || hostname === 'media.discordapp.net') && /^\/attachments\//i.test(url.pathname);
+  } catch { return false; }
+}
+
+async function refreshDiscordAttachmentUrl(url: string): Promise<string | null> {
+  if (!isDiscordAttachmentUrl(url)) return null;
+  const token = process.env.DISCORD_BOT_TOKEN ?? process.env.DISCORD_TOKEN;
+  if (!token) {
+    console.error('[Media] Discord CDN refresh skipped: no DISCORD_BOT_TOKEN/DISCORD_TOKEN');
+    return null;
+  }
+  try {
+    const response = await fetch('https://discord.com/api/v10/attachments/refresh-urls', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bot ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Leeha/1.0 (+https://github.com/AlexFLAVIUS35/Discord-AI-opencode)',
+      },
+      body: JSON.stringify({ attachment_urls: [url] }),
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!response.ok) {
+      console.error(`[Media] Discord CDN refresh failed: ${response.status} ${response.statusText}`);
+      return null;
+    }
+    const data = await response.json() as { refreshed_urls?: Array<{ original?: string; refreshed?: string }> };
+    const refreshed = data.refreshed_urls?.find(item => item.original === url)?.refreshed ?? data.refreshed_urls?.[0]?.refreshed;
+    if (!refreshed) {
+      console.error('[Media] Discord CDN refresh returned no refreshed URL');
+      return null;
+    }
+    return refreshed;
+  } catch (error) {
+    console.error('[Media] Discord CDN refresh error:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
 function isDiscordGifUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.hostname.toLowerCase() === 'cdn.discordapp.com' && /\.gif$/i.test(url.pathname);
+    return (url.hostname.toLowerCase() === 'cdn.discordapp.com' || url.hostname.toLowerCase() === 'media.discordapp.net') && /\.gif$/i.test(url.pathname);
   } catch { return false; }
 }
 
@@ -193,13 +236,15 @@ async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: str
     const klipyMedia = await resolveKlipyGif(url);
     if (klipyMedia) return klipyMedia;
   }
-  const response = await fetchExternal(url);
+  const refreshedDiscordUrl = await refreshDiscordAttachmentUrl(url);
+  const fetchUrl = refreshedDiscordUrl ?? url;
+  const response = await fetchExternal(fetchUrl);
   if (!response || !response.ok) {
     console.error(`[Media] Failed to fetch linked media: ${url} (${response?.status ?? 'network error'})`);
     return null;
   }
   const responseMime = response.headers.get('content-type')?.split(';')[0].toLowerCase();
-  if (isDiscordGifUrl(url) && responseMime === 'image/gif') {
+  if (isDiscordGifUrl(fetchUrl) && responseMime === 'image/gif') {
     const png = await discordGifToPng(response);
     if (png) return png;
     return null;
@@ -208,7 +253,7 @@ async function resolveLinkedMedia(url: string): Promise<{ url: string; mime: str
   if (!responseMime?.includes('html') && !responseMime?.includes('xhtml')) return null;
   const contentLength = Number(response.headers.get('content-length') ?? 0);
   if (contentLength > 2 * 1024 * 1024) return null;
-  const finalUrl = safeUrl(response.url || url);
+  const finalUrl = safeUrl(response.url || fetchUrl);
   if (!finalUrl) return null;
   const html = await response.text();
   for (const candidate of extractMetaMedia(html, finalUrl)) {
