@@ -1,0 +1,34 @@
+name: Fix GIF frame extraction
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch GIF conversion and remove temporary workflow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/services/sessionManager.ts')
+          s = p.read_text()
+          old = 'sharp(bytes, { animated: true, page: 0 }).png()'
+          new = 'sharp(bytes, { pages: 1, page: 0 }).png()'
+          if old not in s:
+              raise SystemExit('Expected GIF conversion line was not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm .github/workflows/fix-gif-frame.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/services/sessionManager.ts .github/workflows/fix-gif-frame.yml
+          git commit -m 'fix: render only first frame of Discord GIFs'
+          git push origin HEAD:main
