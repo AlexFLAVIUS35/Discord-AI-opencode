@@ -66,6 +66,11 @@ function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
   if (!process.env['GOOGLE_GENERATIVE_AI_API_KEY']?.trim()) return;
 
   const models: Array<[string, string[]]> = [
+    ['google/gemini-3.7-flash', ['text']],
+    ['google/gemini-3.6-flash', ['text']],
+    ['google/gemini-3.5-flash', ['text']],
+    ['google/gemini-3.5-flash-lite', ['text']],
+    ['google/gemini-3.1-flash-lite', ['text']],
     ['google/gemini-2.5-flash', ['text']],
     ['google/gemini-2.5-flash-lite', ['text']],
     ['google/gemini-2.5-pro', ['text']],
