@@ -56,6 +56,16 @@ export async function handleInteraction(interaction: Interaction) {
         await handlePersonalitySplitModal(interaction);
       } catch (error) {
         console.error('Error handling personality split modal:', error);
+        try {
+          if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+              content: '❌ Could not save that personality part. Try submitting it again.',
+              flags: MessageFlags.Ephemeral,
+            });
+          }
+        } catch {
+          // Interaction already expired or was acknowledged.
+        }
       }
       return;
     }
@@ -184,20 +194,23 @@ async function handlePersonalitySplitModal(interaction: import('discord.js').Mod
     return;
   }
 
-  if (interaction.message) {
-    const nextButton = new ButtonBuilder()
-      .setCustomId(`personality_split_next:${guildId}:${userId}`)
-      .setLabel('Next Part')
-      .setStyle(ButtonStyle.Secondary);
-    const doneButton = new ButtonBuilder()
-      .setCustomId(`personality_split_done:${guildId}:${userId}`)
-      .setLabel('Done')
-      .setStyle(ButtonStyle.Success);
+  const nextButton = new ButtonBuilder()
+    .setCustomId(`personality_split_next:${guildId}:${userId}`)
+    .setLabel('Next Part')
+    .setStyle(ButtonStyle.Secondary);
+  const doneButton = new ButtonBuilder()
+    .setCustomId(`personality_split_done:${guildId}:${userId}`)
+    .setLabel('Done')
+    .setStyle(ButtonStyle.Success);
+  const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(nextButton, doneButton)];
+  const content = `🧠 **Split personality setup**\n\nPress **Next Part** to enter another personality part. Press **Done** when finished.\n\nParts: **${count}**`;
 
-    await interaction.message.edit({
-      content: `🧠 **Split personality setup**\n\nPress **Next Part** to enter another personality part. Press **Done** when finished.\n\nParts: **${count}**`,
-      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(nextButton, doneButton)],
-    });
+  // A modal opened by a button is a message-originated modal. Update that
+  // original message instead of trying to edit the modal interaction's
+  // message object. This keeps the Next Part / Done buttons alive.
+  if (interaction.isFromMessage()) {
+    await interaction.update({ content, components });
+    return;
   }
 
   await interaction.reply({ content: `✅ Part **${count}** added. Press **Next Part** for another part or **Done** when finished.`, flags: MessageFlags.Ephemeral });
