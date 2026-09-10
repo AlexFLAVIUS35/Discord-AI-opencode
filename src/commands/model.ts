@@ -17,7 +17,7 @@ type ModelInfo = {
   runtimeProviderID?: string;
 };
 
-let catalog: ModelInfo[] = [];
+let catalog: ModelInfo[] = dataStore.getModelCatalog();
 let refreshPromise: Promise<ModelInfo[]> | undefined;
 
 function normalizeInput(value: unknown): string[] {
@@ -63,8 +63,8 @@ function addProviderModels(
 }
 
 function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
-  // Native Google IDs are built into the Discord catalog so they survive
-  // OpenCode catalog refreshes even when /provider only reports aliases.
+  if (!process.env['GOOGLE_GENERATIVE_AI_API_KEY']?.trim()) return;
+
   const models: Array<[string, string[]]> = [
     ['google/gemini-3.7-flash', ['text']],
     ['google/gemini-3.6-flash', ['text']],
@@ -135,8 +135,14 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     const providers = await Promise.all(instances.map(instance => readServerCatalog(instance.port)));
     const merged = new Map<string, ModelInfo>();
 
-    // Preserve the existing catalog during refresh. This prevents a temporary
-    // or incomplete OpenCode /provider response from deleting known models.
+    // Start with the persisted catalog so a transient /provider failure never
+    // destroys the last known-good provider/model IDs across process restarts.
+    for (const model of dataStore.getModelCatalog()) {
+      merged.set(model.id, model);
+    }
+
+    // Also preserve the in-memory catalog in case another refresh populated it
+    // since the persisted snapshot was read.
     for (const model of catalog) {
       merged.set(model.id, model);
     }
@@ -150,10 +156,10 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
-    // Built-in/native entries are authoritative and must always survive refresh.
     addNativeGoogleModels(merged);
 
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
+    dataStore.setModelCatalog(catalog);
     return catalog;
   })();
 
@@ -217,7 +223,7 @@ function formatCatalog(models: ModelInfo[]): string[] {
   const lines = ['### 🤖 Available Models', ''];
   for (const [provider, providerModels] of groups) {
     lines.push(`**${provider}**`);
-    for (const model of providerModels) lines.push(`• \`${model}\``);
+    for (const model of providerModels) lines.push(`• \\`${model}\``);
     lines.push('');
   }
   return splitForDiscord(lines.join('\n'));
@@ -288,7 +294,7 @@ export const model: Command = {
         return;
       }
 
-      const chunks = splitForDiscord([`### ${label}`, '', ...matching.map(model => `• \`${model.id}\``)].join('\n'));
+      const chunks = splitForDiscord([`### ${label}`, '', ...matching.map(model => `• \\`${model.id}\``)].join('\n'));
       await interaction.editReply(chunks[0]);
       for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
       return;
@@ -298,13 +304,13 @@ export const model: Command = {
     const selected = models.find(model => model.id === modelName);
 
     if (!selected) {
-      await interaction.editReply(`❌ Model \`${modelName}\` is not in the OpenCode catalog. Use the exact \`provider/model\` ID shown by \`/model list\`.`);
+      await interaction.editReply(`❌ Model \\`${modelName}\` is not in the OpenCode catalog. Use the exact \\`provider/model\` ID shown by \\`/model list\`.`);
       return;
     }
 
     const channelId = getEffectiveChannelId(interaction);
     dataStore.setChannelModel(channelId, selected.id);
-    await interaction.editReply(`✅ Model for this channel set to \`${selected.id}\`.`);
+    await interaction.editReply(`✅ Model for this channel set to \\`${selected.id}\`.`);
   },
 
   async autocomplete(interaction: AutocompleteInteraction) {
