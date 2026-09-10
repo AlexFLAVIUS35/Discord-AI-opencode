@@ -63,8 +63,9 @@ function addProviderModels(
 }
 
 function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
-  if (!process.env['GOOGLE_GENERATIVE_AI_API_KEY']?.trim()) return;
-
+  // The Google credential may be supplied through OpenCode's provider config
+  // rather than the Discord bot process environment. The catalog must still
+  // expose the native google/* IDs because runtime OpenCode resolves them.
   const models: Array<[string, string[]]> = [
     ['google/gemini-3.7-flash', ['text']],
     ['google/gemini-3.6-flash', ['text']],
@@ -119,10 +120,8 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       addProviderModels(models, provider.id, provider.models, connectedProviders);
     }
 
-    // OpenCode's built-in catalog can expose Google models through provider
-    // aliases such as anyapi/google/... while the native Google provider is
-    // configured separately via GOOGLE_GENERATIVE_AI_API_KEY. Always expose
-    // the native IDs explicitly when that credential is present.
+    // Keep native Google IDs separate from aliases such as anyapi/google/...
+    // so /model set can select the actual OpenCode google provider.
     addNativeGoogleModels(models);
 
     return [...models.values()];
@@ -148,8 +147,7 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
-    // A catalog refresh may run before any OpenCode instance exists, so add
-    // native Google models directly from the Railway environment as well.
+    // A catalog refresh may run before any OpenCode instance exists.
     addNativeGoogleModels(merged);
 
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -310,9 +308,9 @@ export const model: Command = {
     const focused = interaction.options.getFocused().toLowerCase();
     if (!catalog.length && !refreshPromise) await refreshModelCatalog();
 
-    const filtered = catalog.filter(model => model.id.toLowerCase().includes(focused)).slice(0, 25);
+    const filtered = catalog.filter(model => model.id.toLowerCase().includes(focused));
     try {
-      await interaction.respond(filtered.map(model => ({ name: model.id, value: model.id })));
+      await interaction.respond(filtered.slice(0, 25).map(model => ({ name: model.id, value: model.id })));
     } catch {
       // Discord can close an autocomplete interaction before the response arrives.
     }
