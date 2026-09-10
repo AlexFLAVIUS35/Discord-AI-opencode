@@ -20,16 +20,12 @@ let catalog: ModelInfo[] = [];
 let refreshPromise: Promise<ModelInfo[]> | undefined;
 
 function normalizeInput(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === 'string');
-  }
-
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
   if (value && typeof value === 'object') {
     return Object.entries(value)
       .filter(([, enabled]) => enabled === true)
       .map(([name]) => name);
   }
-
   if (typeof value === 'string') return [value];
   return [];
 }
@@ -44,11 +40,7 @@ function addProviderModels(
   for (const [modelId, model] of Object.entries(models)) {
     const id = sanitizeModel(`${providerId}/${modelId}`);
     if (!id.includes('/')) continue;
-
-    target.set(id, {
-      id,
-      input: normalizeInput(model?.capabilities?.input),
-    });
+    target.set(id, { id, input: normalizeInput(model?.capabilities?.input) });
   }
 }
 
@@ -58,7 +50,6 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       headers: getAuthHeaders(),
       signal: AbortSignal.timeout(5000),
     });
-
     if (!response.ok) return [];
 
     const payload = await response.json() as {
@@ -68,7 +59,6 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
     };
 
     const models = new Map<string, ModelInfo>();
-
     if (Array.isArray(payload.all)) {
       for (const provider of payload.all) {
         if (provider.id) addProviderModels(models, provider.id, provider.models);
@@ -78,7 +68,6 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
         addProviderModels(models, providerId, provider.models);
       }
     }
-
     return [...models.values()];
   } catch {
     return [];
@@ -86,27 +75,23 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
 }
 
 /**
- * Rebuild the catalog directly from the OpenCode servers used by this bot.
- *
- * There is intentionally no CLI catalog, model-ID guessing, provider remapping,
- * stale-ID correction, or forced `opencode models --refresh` here. The server's
- * `/provider` response is the only authority because that is the same server
- * that resolves models for Discord sessions.
+ * Rebuild the model catalog directly from the OpenCode servers used by this bot.
+ * The server `/provider` response is the only source of truth.
+ * There is deliberately no CLI catalog, model-ID guessing, provider remapping,
+ * stale-ID correction, or `opencode models --refresh` fallback.
  */
 export async function refreshModelCatalog(): Promise<ModelInfo[]> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
-    const instances = getAllInstances().filter(instance => !instance.exited);
+    const instances = getAllInstances();
     const providers = await Promise.all(instances.map(instance => readServerCatalog(instance.port)));
-
     const merged = new Map<string, ModelInfo>();
+
     for (const models of providers) {
       for (const model of models) {
         const existing = merged.get(model.id);
-        if (!existing || model.input.length > existing.input.length) {
-          merged.set(model.id, model);
-        }
+        if (!existing || model.input.length > existing.input.length) merged.set(model.id, model);
       }
     }
 
@@ -135,7 +120,6 @@ function getEffectiveChannelId(interaction: ChatInputCommandInteraction): string
 function splitForDiscord(text: string, maxLength = 1900): string[] {
   const chunks: string[] = [];
   let current = '';
-
   for (const line of text.split('\n')) {
     if (current && current.length + line.length + 1 > maxLength) {
       chunks.push(current);
@@ -143,14 +127,12 @@ function splitForDiscord(text: string, maxLength = 1900): string[] {
     }
     current += `${current ? '\n' : ''}${line}`;
   }
-
   if (current) chunks.push(current);
   return chunks.length ? chunks : [''];
 }
 
 function formatCatalog(models: ModelInfo[]): string[] {
   const groups = new Map<string, string[]>();
-
   for (const model of models) {
     const separator = model.id.indexOf('/');
     const provider = separator === -1 ? model.id : model.id.slice(0, separator);
@@ -165,7 +147,6 @@ function formatCatalog(models: ModelInfo[]): string[] {
     for (const model of providerModels) lines.push(`• \`${model}\``);
     lines.push('');
   }
-
   return splitForDiscord(lines.join('\n'));
 }
 
@@ -173,26 +154,10 @@ export const model: Command = {
   data: new SlashCommandBuilder()
     .setName('model')
     .setDescription('Manage AI models for the current channel')
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('list')
-        .setDescription('List all models available from OpenCode'),
-    )
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('media')
-        .setDescription('Show models that support image input'),
-    )
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('text')
-        .setDescription('Show models that support text input'),
-    )
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('refresh')
-        .setDescription('Re-read the model catalog from OpenCode'),
-    )
+    .addSubcommand(subcommand => subcommand.setName('list').setDescription('List all models available from OpenCode'))
+    .addSubcommand(subcommand => subcommand.setName('media').setDescription('Show models that support image input'))
+    .addSubcommand(subcommand => subcommand.setName('text').setDescription('Show models that support text input'))
+    .addSubcommand(subcommand => subcommand.setName('refresh').setDescription('Re-read the model catalog from OpenCode'))
     .addSubcommand(subcommand =>
       subcommand
         .setName('set')
@@ -256,8 +221,9 @@ export const model: Command = {
         return;
       }
 
-      const text = [`### ${label}`, '', ...matching.map(model => `• \`${model.id}\``)].join('\n');
-      const chunks = splitForDiscord(text);
+      const chunks = splitForDiscord(
+        [`### ${label}`, '', ...matching.map(model => `• \`${model.id}\``)].join('\n'),
+      );
       await interaction.editReply(chunks[0]);
       for (const chunk of chunks.slice(1)) {
         await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
@@ -282,10 +248,7 @@ export const model: Command = {
 
   async autocomplete(interaction: AutocompleteInteraction) {
     const focused = interaction.options.getFocused().toLowerCase();
-
-    if (!catalog.length && !refreshPromise) {
-      await refreshModelCatalog();
-    }
+    if (!catalog.length && !refreshPromise) await refreshModelCatalog();
 
     const filtered = catalog
       .filter(model => model.id.toLowerCase().includes(focused))
