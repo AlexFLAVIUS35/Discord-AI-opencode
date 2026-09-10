@@ -2,6 +2,7 @@ import { ChatInputCommandInteraction, MessageFlags, PermissionFlagsBits, SlashCo
 import type { Command } from './index.js';
 import * as dataStore from '../services/dataStore.js';
 import * as guildPersonality from '../services/guildPersonalityStore.js';
+import * as personalitySplit from '../services/personalitySplitStore.js';
 
 const MAX_PERSONALITY_LENGTH = 2000;
 
@@ -42,8 +43,12 @@ export const personality: Command = {
         .addStringOption(option => option
           .setName('personality')
           .setDescription('Personality enforced for everyone in this server')
-          .setRequired(true)
-          .setMaxLength(MAX_PERSONALITY_LENGTH)))
+          .setRequired(false)
+          .setMaxLength(MAX_PERSONALITY_LENGTH))
+        .addBooleanOption(option => option
+          .setName('split')
+          .setDescription('Enter the personality in multiple parts')
+          .setRequired(false)))
       .addSubcommand(sub => sub
         .setName('reset')
         .setDescription('Remove and disable the server-wide personality'))) as SlashCommandBuilder,
@@ -64,7 +69,31 @@ export const personality: Command = {
       }
 
       if (subcommand === 'set') {
-        const value = interaction.options.getString('personality', true).trim();
+        const split = interaction.options.getBoolean('split') ?? false;
+
+        if (split) {
+          personalitySplit.start(guildId, interaction.user.id);
+          await interaction.reply({
+            content: '🧠 **Split personality setup**\n\nPress **Next Part** to enter a personality part. You can add as many parts as you need. Press **Done** when finished.\n\nParts: **0**',
+            flags: MessageFlags.Ephemeral,
+            components: [
+              {
+                type: 1,
+                components: [
+                  { type: 2, custom_id: `personality_split_next:${guildId}:${interaction.user.id}`, label: 'Next Part', style: 2 },
+                  { type: 2, custom_id: `personality_split_done:${guildId}:${interaction.user.id}`, label: 'Done', style: 3 },
+                ],
+              },
+            ],
+          });
+          return;
+        }
+
+        const value = interaction.options.getString('personality')?.trim();
+        if (!value) {
+          await interaction.reply({ content: '❌ Personality text is required unless `split` is enabled.', flags: MessageFlags.Ephemeral });
+          return;
+        }
         guildPersonality.set(guildId, value);
         await interaction.reply({ content: '🧠 **Server-wide personality enabled.** Everyone in this server will use it, and personal personalities are ignored until `/personality all off`.', flags: MessageFlags.Ephemeral });
         return;
