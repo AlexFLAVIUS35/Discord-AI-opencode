@@ -1,7 +1,19 @@
-import { Interaction, MessageFlags } from 'discord.js';
+import {
+  Interaction,
+  MessageFlags,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} from 'discord.js';
 import { commands } from '../commands/index.js';
 import { handleButton } from './buttonHandler.js';
 import { isAuthorized } from '../services/configStore.js';
+import * as guildPersonality from '../services/guildPersonalityStore.js';
+import * as personalitySplit from '../services/personalitySplitStore.js';
+import * as dataStore from '../services/dataStore.js';
 
 export async function handleInteraction(interaction: Interaction) {
   if (interaction.isButton()) {
@@ -12,12 +24,41 @@ export async function handleInteraction(interaction: Interaction) {
       });
       return;
     }
+
+    if (interaction.customId.startsWith('personality_split_')) {
+      try {
+        await handlePersonalitySplitButton(interaction);
+      } catch (error) {
+        console.error('Error handling personality split button:', error);
+      }
+      return;
+    }
+
     try {
       await handleButton(interaction);
     } catch (error) {
       console.error('Error handling button:', error);
     }
     return;
+  }
+
+  if (interaction.isModalSubmit()) {
+    if (!isAuthorized(interaction.user.id)) {
+      await interaction.reply({
+        content: '🚫 You are not authorized to use this bot.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.customId.startsWith('personality_split_modal:')) {
+      try {
+        await handlePersonalitySplitModal(interaction);
+      } catch (error) {
+        console.error('Error handling personality split modal:', error);
+      }
+      return;
+    }
   }
 
   if (interaction.isAutocomplete()) {
@@ -71,4 +112,93 @@ export async function handleInteraction(interaction: Interaction) {
       console.error('Failed to send error response to user:', replyError);
     }
   }
+}
+
+async function handlePersonalitySplitButton(interaction: import('discord.js').ButtonInteraction) {
+  const [, action, guildId, userId] = interaction.customId.match(/^personality_split_(next|done):([^:]+):([^:]+)$/) ?? [];
+
+  if (!action || !guildId || !userId || userId !== interaction.user.id) {
+    await interaction.reply({ content: '❌ This personality setup belongs to someone else.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (!interaction.guildId || interaction.guildId !== guildId || !interaction.memberPermissions?.has('Administrator')) {
+    await interaction.reply({ content: '❌ Only the administrator who started this setup can use it.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (personalitySplit.getPartCount(guildId, userId) === 0 && action === 'done') {
+    await interaction.reply({ content: '❌ Add at least one personality part first.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (action === 'next') {
+    const modal = new ModalBuilder()
+      .setCustomId(`personality_split_modal:${guildId}:${userId}`)
+      .setTitle('Add Personality Part');
+
+    const input = new TextInputBuilder()
+      .setCustomId('personality_part')
+      .setLabel('Personality text')
+      .setPlaceholder('Type the next part of the personality...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(4000);
+
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+    await interaction.showModal(modal);
+    return;
+  }
+
+  const value = personalitySplit.finish(guildId, userId);
+  if (!value) {
+    await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality all set split:true` again.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  guildPersonality.set(guildId, value);
+  await interaction.update({
+    content: `🧠 **Server-wide personality enabled.**\n\n${value}`,
+    components: [],
+  });
+}
+
+async function handlePersonalitySplitModal(interaction: import('discord.js').ModalSubmitInteraction) {
+  const [, guildId, userId] = interaction.customId.match(/^personality_split_modal:([^:]+):([^:]+)$/) ?? [];
+
+  if (!guildId || !userId || userId !== interaction.user.id || interaction.guildId !== guildId) {
+    await interaction.reply({ content: '❌ This personality setup belongs to someone else.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (!interaction.memberPermissions?.has('Administrator')) {
+    await interaction.reply({ content: '❌ Only the administrator who started this setup can use it.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const part = interaction.fields.getTextInputValue('personality_part');
+  const count = personalitySplit.addPart(guildId, userId, part);
+
+  if (count === undefined) {
+    await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality all set split:true` again.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (interaction.message) {
+    const nextButton = new ButtonBuilder()
+      .setCustomId(`personality_split_next:${guildId}:${userId}`)
+      .setLabel('Next Part')
+      .setStyle(ButtonStyle.Secondary);
+    const doneButton = new ButtonBuilder()
+      .setCustomId(`personality_split_done:${guildId}:${userId}`)
+      .setLabel('Done')
+      .setStyle(ButtonStyle.Success);
+
+    await interaction.message.edit({
+      content: `🧠 **Split personality setup**\n\nPress **Next Part** to enter another personality part. Press **Done** when finished.\n\nParts: **${count}**`,
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(nextButton, doneButton)],
+    });
+  }
+
+  await interaction.reply({ content: `✅ Part **${count}** added. Press **Next Part** for another part or **Done** when finished.`, flags: MessageFlags.Ephemeral });
 }
