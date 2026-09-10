@@ -11,6 +11,8 @@ const DEFAULT_PORT_MAX = 14200;
 const WINDOWS_OPENCODE_COMMANDS = ["opencode.cmd", "opencode.exe", "opencode"];
 const POSIX_OPENCODE_COMMANDS = ["opencode"];
 const READY_POLL_INTERVAL_MS = 50;
+const googleApiKey = process.env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim();
+const apiKey302 = process.env["302AI_API_KEY"]?.trim();
 
 const instances = new Map<string, ServeInstance>();
 
@@ -109,7 +111,7 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   // Do not rewrite OPENCODE_CONFIG_CONTENT. OpenCode must receive the user's
   // complete provider configuration unchanged so /provider can expose the
   // complete catalog (Mimo, 302ai, Google, and every other configured provider).
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     OPENCODE_ENABLE_EXA: "1",
   };
@@ -121,8 +123,8 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   console.log(`[opencode] Agent: PLAN`);
   console.log(`[opencode] Web search: ENABLED (OpenCode websearch + webfetch)`);
   console.log(`[opencode] Provider config: inherited unchanged from normal OpenCode environment`);
-  if (env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim()) console.log(`[opencode] Google Gemini runtime provider: AVAILABLE`);
-  if (env["302AI_API_KEY"]?.trim()) console.log(`[opencode] 302.AI runtime provider: AVAILABLE`);
+  if (googleApiKey) console.log(`[opencode] Google Gemini runtime provider: AVAILABLE`);
+  if (apiKey302) console.log(`[opencode] 302.AI runtime provider: AVAILABLE`);
 
   let child: ChildProcess;
   try {
