@@ -7,9 +7,10 @@ const CONFIG_DIR = join(homedir(), '.remote-opencode'); const DATA_FILE = join(C
 function ensureDataDir(){if(!existsSync(CONFIG_DIR))mkdirSync(CONFIG_DIR,{recursive:true});}
 function loadData():DataStore{ensureDataDir();if(!existsSync(DATA_FILE))return{projects:[],bindings:[]};try{return JSON.parse(readFileSync(DATA_FILE,'utf-8')) as DataStore}catch{return{projects:[],bindings:[]}}}
 function saveData(data:DataStore){ensureDataDir();writeFileSync(DATA_FILE,JSON.stringify(data,null,2),'utf-8');}
-export function setUserPersonality(userId:string,personality:string){const d=loadData();if(!d.userPersonalities)d.userPersonalities=[];const i=d.userPersonalities.findIndex(p=>p.userId===userId);const v:UserPersonality={userId,personality,updatedAt:Date.now()};if(i>=0)d.userPersonalities[i]=v;else d.userPersonalities.push(v);saveData(d)}
-export function getUserPersonality(userId:string){return loadData().userPersonalities?.find(p=>p.userId===userId)?.personality}
-export function removeUserPersonality(userId:string){const d=loadData();if(!d.userPersonalities)return false;const i=d.userPersonalities.findIndex(p=>p.userId===userId);if(i<0)return false;d.userPersonalities.splice(i,1);saveData(d);return true}
+function personalityKey(botId:string,userId:string){return `${botId}:${userId}`;}
+export function setUserPersonality(botId:string,userId:string,personality:string){const d=loadData();if(!d.userPersonalities)d.userPersonalities=[];const key=personalityKey(botId,userId);const i=d.userPersonalities.findIndex(p=>p.userId===key);const v:UserPersonality={userId:key,personality,updatedAt:Date.now()};if(i>=0)d.userPersonalities[i]=v;else d.userPersonalities.push(v);saveData(d)}
+export function getUserPersonality(botId:string,userId:string){const d=loadData();const key=personalityKey(botId,userId);return d.userPersonalities?.find(p=>p.userId===key)?.personality}
+export function removeUserPersonality(botId:string,userId:string){const d=loadData();if(!d.userPersonalities)return false;const key=personalityKey(botId,userId);const i=d.userPersonalities.findIndex(p=>p.userId===key);if(i<0)return false;d.userPersonalities.splice(i,1);saveData(d);return true}
 export function addProject(alias:string,path:string){const d=loadData();const i=d.projects.findIndex(p=>p.alias===alias);if(i>=0)d.projects[i].path=path;else d.projects.push({alias,path});saveData(d)}
 export function getProjects(){return loadData().projects} export function getProject(alias:string){return loadData().projects.find(p=>p.alias===alias)}
 export function removeProject(alias:string){const d=loadData();const i=d.projects.findIndex(p=>p.alias===alias);if(i<0)return false;d.projects.splice(i,1);d.bindings=d.bindings.filter(b=>b.projectAlias!==alias);saveData(d);return true}
