@@ -42,7 +42,7 @@ export async function handleInteraction(interaction: Interaction) {
 }
 
 async function handlePersonalitySplitButton(interaction: import('discord.js').ButtonInteraction) {
-  const [, botId, scopeId, userId, action] = interaction.customId.match(/^personality_split_(next|done):([^:]+):([^:]+):([^:]+)$/) ?? [];
+  const [, action, botId, scopeId, userId] = interaction.customId.match(/^personality_split_(next|done):([^:]+):([^:]+):([^:]+)$/) ?? [];
   if (!action || !botId || !scopeId || !userId || userId !== interaction.user.id) { await interaction.reply({ content: '❌ This personality setup belongs to someone else.', flags: MessageFlags.Ephemeral }); return; }
   const currentBotId = interaction.client.user?.id ?? 'unknown-bot';
   if (botId !== currentBotId) { await interaction.reply({ content: '❌ This personality setup belongs to another bot.', flags: MessageFlags.Ephemeral }); return; }
