@@ -32,18 +32,12 @@ program
 
 program
   .command('start')
-  .description('Start the Discord bot')
+  .description('Start all Discord bots configured with BOT_<number>TOKEN')
   .action(async () => {
     if (!hasBotConfig()) {
-      console.log(pc.yellow('No bot configuration found.'));
-      console.log(`Run ${pc.cyan('remote-opencode setup')} first to configure your Discord bot.\n`);
+      console.log(pc.yellow('No bot tokens found.'));
+      console.log(`Set ${pc.cyan('BOT_1TOKEN')}, ${pc.cyan('BOT_2TOKEN')}, etc. in the environment.\n`);
       process.exit(1);
-    }
-    
-    try {
-      await deployCommands();
-    } catch {
-      // Continue even if command deployment fails; the bot can still start.
     }
 
     await startBot();
@@ -58,7 +52,7 @@ program
 
 program
   .command('deploy')
-  .description('Deploy Discord slash commands')
+  .description('Deploy Discord slash commands for every configured bot')
   .action(async () => {
     await deployCommands();
   });
