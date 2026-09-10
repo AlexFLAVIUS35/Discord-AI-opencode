@@ -2,6 +2,25 @@
 
 This fork keeps the Discord + OpenCode + voice architecture of remote-opencode, but makes the default experience chat-first.
 
+## Multiple Discord bots
+
+The bot process can run as many Discord bot accounts as you put in the environment. Add tokens using the numbered `BOT_<number>TOKEN` pattern:
+
+```bash
+BOT_1TOKEN=token_for_first_bot
+BOT_2TOKEN=token_for_second_bot
+BOT_3TOKEN=token_for_third_bot
+# ...any number of BOT_<number>TOKEN variables
+```
+
+The numbers do not need to be consecutive. For example, `BOT_1TOKEN`, `BOT_7TOKEN`, and `BOT_42TOKEN` all work.
+
+Each configured token starts its own discord.js `Client`, receives the same handlers/commands, and gets the global slash commands deployed to its own Discord application. discord.js supports logging a client in with an explicit token, and each client represents its own logged-in bot account. citeturn1search1
+
+`DISCORD_TOKEN` is still accepted as a backwards-compatible single-bot fallback if no `BOT_<number>TOKEN` variables are present.
+
+Keep bot tokens private and store them in Railway/environment variables rather than committing them to Git.
+
 ## Storage safety
 
 Storage is **disabled by default**.
