@@ -15,6 +15,7 @@ type ModelInfo = {
   id: string;
   input: string[];
   modelID?: string;
+  runtimeProviderID?: string;
 };
 
 let catalog: ModelInfo[] = [];
@@ -31,18 +32,48 @@ function normalizeInput(value: unknown): string[] {
   return [];
 }
 
+type ProviderModel = {
+  capabilities?: { input?: unknown };
+  modelID?: unknown;
+};
+
+type ProviderEntry = {
+  models?: Record<string, ProviderModel>;
+};
+
 function addProviderModels(
   target: Map<string, ModelInfo>,
   providerId: string,
-  models: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> | undefined,
+  models: Record<string, ProviderModel> | undefined,
+  connectedProviders: Set<string>,
 ): void {
   if (!providerId || !models) return;
 
   for (const [modelId, model] of Object.entries(models)) {
     const id = sanitizeModel(`${providerId}/${modelId}`);
     if (!id.includes('/')) continue;
-    const modelID = typeof model?.modelID === 'string' && model.modelID.length > 0 ? model.modelID : undefined;
-    target.set(id, { id, input: normalizeInput(model?.capabilities?.input), modelID });
+
+    const upstreamModelID = typeof model?.modelID === 'string' && model.modelID.length > 0
+      ? model.modelID
+      : modelId;
+
+    // The Discord catalog intentionally keeps the provider prefix so users can
+    // identify/select the exact catalog entry. At runtime, however, an exposed
+    // provider can be an alias for the same upstream model exposed by another
+    // connected provider. Prefer the catalog provider when it is connected;
+    // otherwise route by the modelID to a connected provider that exposes the
+    // same upstream model.
+    let runtimeProviderID: string | undefined;
+    if (connectedProviders.has(providerId)) {
+      runtimeProviderID = providerId;
+    }
+
+    target.set(id, {
+      id,
+      input: normalizeInput(model?.capabilities?.input),
+      modelID: upstreamModelID,
+      runtimeProviderID,
+    });
   }
 }
 
@@ -56,24 +87,58 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
 
     const payload = await response.json() as {
       all?:
-        | Record<string, { models?: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> }>
-        | Array<{ id?: string; models?: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> }>;
+        | Record<string, ProviderEntry>
+        | Array<{ id?: string; models?: Record<string, ProviderModel> }>;
+      connected?: string[];
     };
 
-    // `all` is the complete OpenCode catalog. Do not restrict this to `connected`:
-    // Discord needs the provider/model ID to remain selectable and identifiable even
-    // when a provider is not currently connected. Runtime validation belongs to the
-    // OpenCode request itself.
+    const connectedProviders = new Set(
+      Array.isArray(payload.connected)
+        ? payload.connected.filter((id): id is string => typeof id === 'string')
+        : [],
+    );
+
     const models = new Map<string, ModelInfo>();
+    const allProviders: Array<{ id: string; models?: Record<string, ProviderModel> }> = [];
+
     if (Array.isArray(payload.all)) {
       for (const provider of payload.all) {
-        if (provider.id) addProviderModels(models, provider.id, provider.models);
+        if (provider.id) allProviders.push({ id: provider.id, models: provider.models });
       }
     } else {
       for (const [providerId, provider] of Object.entries(payload.all ?? {})) {
-        addProviderModels(models, providerId, provider.models);
+        allProviders.push({ id: providerId, models: provider.models });
       }
     }
+
+    for (const provider of allProviders) {
+      addProviderModels(models, provider.id, provider.models, connectedProviders);
+    }
+
+    // If a catalog provider is not connected, find a connected provider that
+    // exposes the exact same upstream modelID. This is what turns entries such
+    // as 302ai/gemini-2.5-flash into the actual connected Gemini model at send
+    // time, while keeping the 302ai/... name visible in Discord.
+    for (const model of models.values()) {
+      if (model.runtimeProviderID || !model.modelID) continue;
+
+      for (const provider of allProviders) {
+        if (!connectedProviders.has(provider.id) || !provider.models) continue;
+
+        const exposesModel = Object.entries(provider.models).some(([modelId, entry]) => {
+          const upstreamId = typeof entry?.modelID === 'string' && entry.modelID.length > 0
+            ? entry.modelID
+            : modelId;
+          return upstreamId === model.modelID;
+        });
+
+        if (exposesModel) {
+          model.runtimeProviderID = provider.id;
+          break;
+        }
+      }
+    }
+
     return [...models.values()];
   } catch {
     return [];
@@ -91,7 +156,12 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     for (const models of providers) {
       for (const model of models) {
         const existing = merged.get(model.id);
-        if (!existing || model.input.length > existing.input.length || (!existing.modelID && model.modelID)) {
+        if (
+          !existing
+          || model.input.length > existing.input.length
+          || (!existing.modelID && model.modelID)
+          || (!existing.runtimeProviderID && model.runtimeProviderID)
+        ) {
           merged.set(model.id, model);
         }
       }
@@ -114,19 +184,21 @@ export function getCachedModels(): string[] {
 
 /**
  * Keep the full provider/model ID for Discord/catalog storage, but expose the
- * provider ID and upstream model ID separately for the OpenCode request.
+ * runtime provider and upstream model ID separately for the OpenCode request.
+ * If the catalog entry is an alias from an unconnected provider, runtimeProviderID
+ * points at a connected provider exposing the same upstream model.
  */
 export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
   const clean = sanitizeModel(model);
   const separator = clean.indexOf('/');
   if (separator === -1) return null;
 
-  const providerID = clean.slice(0, separator);
+  const catalogProviderID = clean.slice(0, separator);
   const modelID = clean.slice(separator + 1);
   const selected = catalog.find(entry => entry.id === clean);
 
   return {
-    providerID,
+    providerID: selected?.runtimeProviderID ?? catalogProviderID,
     modelID: selected?.modelID ?? modelID,
   };
 }
