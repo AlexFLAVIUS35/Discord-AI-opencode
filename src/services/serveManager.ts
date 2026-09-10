@@ -89,6 +89,58 @@ function cleanupInstance(key: string): void {
   instances.delete(key);
 }
 
+function buildRuntimeConfig(baseConfig: string | undefined): string | undefined {
+  const apiKey = process.env["302AI_API_KEY"]?.trim();
+  if (!apiKey) return baseConfig;
+
+  let config: Record<string, unknown> = {};
+  if (baseConfig?.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(baseConfig);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) config = parsed as Record<string, unknown>;
+    } catch {
+      console.warn("[opencode] Ignoring invalid OPENCODE_CONFIG_CONTENT while adding 302ai runtime provider");
+    }
+  }
+
+  const providerConfig = config.provider && typeof config.provider === "object" && !Array.isArray(config.provider)
+    ? { ...(config.provider as Record<string, unknown>) }
+    : {};
+
+  const existing302ai = providerConfig["302ai"] && typeof providerConfig["302ai"] === "object" && !Array.isArray(providerConfig["302ai"])
+    ? { ...(providerConfig["302ai"] as Record<string, unknown>) }
+    : {};
+
+  const existingModels = existing302ai.models && typeof existing302ai.models === "object" && !Array.isArray(existing302ai.models)
+    ? { ...(existing302ai.models as Record<string, unknown>) }
+    : {};
+
+  const baseURL = process.env["302AI_BASE_URL"]?.trim() || "https://api.302ai.com/v1";
+
+  providerConfig["302ai"] = {
+    ...existing302ai,
+    npm: existing302ai.npm ?? "@ai-sdk/openai-compatible",
+    options: {
+      ...(existing302ai.options && typeof existing302ai.options === "object" && !Array.isArray(existing302ai.options)
+        ? existing302ai.options as Record<string, unknown>
+        : {}),
+      baseURL,
+      apiKey,
+    },
+    models: {
+      ...existingModels,
+      "gemini-2.0-flash-lite": {
+        ...(existingModels["gemini-2.0-flash-lite"] && typeof existingModels["gemini-2.0-flash-lite"] === "object" && !Array.isArray(existingModels["gemini-2.0-flash-lite"])
+          ? existingModels["gemini-2.0-flash-lite"] as Record<string, unknown>
+          : {}),
+      },
+    },
+  };
+
+  config.provider = providerConfig;
+  return JSON.stringify(config);
+}
+
 // A project has one OpenCode server regardless of the selected model.
 // The model is a per-prompt setting, so it must never be part of the server
 // identity. Most importantly, the server inherits the user's normal OpenCode
@@ -107,11 +159,15 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   const port = await findAvailablePort();
   const args = ["serve", "--port", port.toString()];
 
-  // Do NOT set OPENCODE_CONFIG here. OpenCode must discover and load its normal
-  // global/project configuration, including provider credentials and model
-  // catalogs. Replacing that config was the reason /provider could return an
-  // incomplete catalog.
-  const env = { ...process.env, OPENCODE_ENABLE_EXA: "1" };
+  // Preserve the user's normal config, while optionally adding a concrete
+  // 302.AI provider when Railway exposes 302AI_API_KEY. This is additive and
+  // avoids replacing the provider catalog used by the rest of OpenCode.
+  const runtimeConfig = buildRuntimeConfig(process.env.OPENCODE_CONFIG_CONTENT);
+  const env = {
+    ...process.env,
+    OPENCODE_ENABLE_EXA: "1",
+    ...(runtimeConfig ? { OPENCODE_CONFIG_CONTENT: runtimeConfig } : {}),
+  };
   const command = resolveOpencodeCommand(env);
 
   console.log(`[opencode] Spawning: ${command} ${args.join(" ")}`);
@@ -120,6 +176,7 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   console.log(`[opencode] Agent: PLAN`);
   console.log(`[opencode] Web search: ENABLED (OpenCode websearch + webfetch)`);
   console.log(`[opencode] Provider config: inherited from normal OpenCode environment`);
+  if (process.env["302AI_API_KEY"]?.trim()) console.log(`[opencode] 302.AI runtime provider: ENABLED`);
 
   let child: ChildProcess;
   try {
