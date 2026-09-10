@@ -63,8 +63,9 @@ function addProviderModels(
 }
 
 function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
-  if (!process.env['GOOGLE_GENERATIVE_AI_API_KEY']?.trim()) return;
-
+  // Keep the native Google catalog authoritative and independent of whether
+  // the API key happens to be visible during a catalog refresh. The runtime
+  // provider still requires GOOGLE_GENERATIVE_AI_API_KEY to actually use them.
   const models: Array<[string, string[]]> = [
     ['google/gemini-3.7-flash', ['text']],
     ['google/gemini-3.6-flash', ['text']],
@@ -135,14 +136,11 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     const providers = await Promise.all(instances.map(instance => readServerCatalog(instance.port)));
     const merged = new Map<string, ModelInfo>();
 
-    // Start with the persisted catalog so a transient /provider failure never
-    // destroys the last known-good provider/model IDs across process restarts.
+    // Never delete previously known models during refresh. Start from durable
+    // storage, then the in-memory copy, then merge any fresh OpenCode entries.
     for (const model of dataStore.getModelCatalog()) {
       merged.set(model.id, model);
     }
-
-    // Also preserve the in-memory catalog in case another refresh populated it
-    // since the persisted snapshot was read.
     for (const model of catalog) {
       merged.set(model.id, model);
     }
@@ -156,6 +154,7 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
+    // Native Google models are always retained, regardless of /provider output.
     addNativeGoogleModels(merged);
 
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
