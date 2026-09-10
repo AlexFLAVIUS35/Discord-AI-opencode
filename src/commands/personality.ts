@@ -37,7 +37,7 @@ export const personality: Command = {
       if (subcommand === 'set') {
         const split = interaction.options.getBoolean('split') ?? false;
         if (split) {
-          personalitySplit.start(botId, guildId, interaction.user.id);
+          personalitySplit.start(botId, guildId, interaction.user.id, 'guild');
           await interaction.reply({ content: '🧠 **Split personality setup**\n\nPress **Next Part** to enter a personality part. You can add as many parts as you need. Press **Done** when finished.\n\nParts: **0**', flags: MessageFlags.Ephemeral, components: [{ type: 1, components: [
             { type: 2, custom_id: `personality_split_next:${botId}:${guildId}:${interaction.user.id}`, label: 'Next Part', style: 2 },
             { type: 2, custom_id: `personality_split_done:${botId}:${guildId}:${interaction.user.id}`, label: 'Done', style: 3 },
