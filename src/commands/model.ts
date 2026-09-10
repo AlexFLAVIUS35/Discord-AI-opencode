@@ -14,7 +14,6 @@ import { getAuthHeaders } from '../services/serverAuth.js';
 type ModelInfo = {
   id: string;
   input: string[];
-  modelID?: string;
   runtimeProviderID?: string;
 };
 
@@ -53,25 +52,16 @@ function addProviderModels(
     const id = sanitizeModel(`${providerId}/${modelId}`);
     if (!id.includes('/')) continue;
 
-    const upstreamModelID = typeof model?.modelID === 'string' && model.modelID.length > 0
-      ? model.modelID
-      : modelId;
-
-    // The Discord catalog intentionally keeps the provider prefix so users can
-    // identify/select the exact catalog entry. At runtime, however, an exposed
-    // provider can be an alias for the same upstream model exposed by another
-    // connected provider. Prefer the catalog provider when it is connected;
-    // otherwise route by the modelID to a connected provider that exposes the
-    // same upstream model.
-    let runtimeProviderID: string | undefined;
-    if (connectedProviders.has(providerId)) {
-      runtimeProviderID = providerId;
-    }
+    // The catalog key is the stable OpenCode model reference shown to the user.
+    // For these exposed provider aliases, the suffix is the actual model name
+    // that should cross the request boundary. Do not trust a mismatched modelID
+    // from catalog metadata: stale provider metadata can map one visible model
+    // to an entirely different upstream model.
+    const runtimeProviderID = connectedProviders.has(providerId) ? providerId : undefined;
 
     target.set(id, {
       id,
       input: normalizeInput(model?.capabilities?.input),
-      modelID: upstreamModelID,
       runtimeProviderID,
     });
   }
@@ -115,30 +105,9 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       addProviderModels(models, provider.id, provider.models, connectedProviders);
     }
 
-    // If a catalog provider is not connected, find a connected provider that
-    // exposes the exact same upstream modelID. This is what turns entries such
-    // as 302ai/gemini-2.5-flash into the actual connected Gemini model at send
-    // time, while keeping the 302ai/... name visible in Discord.
-    for (const model of models.values()) {
-      if (model.runtimeProviderID || !model.modelID) continue;
-
-      for (const provider of allProviders) {
-        if (!connectedProviders.has(provider.id) || !provider.models) continue;
-
-        const exposesModel = Object.entries(provider.models).some(([modelId, entry]) => {
-          const upstreamId = typeof entry?.modelID === 'string' && entry.modelID.length > 0
-            ? entry.modelID
-            : modelId;
-          return upstreamId === model.modelID;
-        });
-
-        if (exposesModel) {
-          model.runtimeProviderID = provider.id;
-          break;
-        }
-      }
-    }
-
+    // If the catalog provider is not connected, keep the catalog entry visible.
+    // Runtime provider selection stays conservative: only use a provider when
+    // OpenCode explicitly reports that provider as connected.
     return [...models.values()];
   } catch {
     return [];
@@ -156,12 +125,7 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     for (const models of providers) {
       for (const model of models) {
         const existing = merged.get(model.id);
-        if (
-          !existing
-          || model.input.length > existing.input.length
-          || (!existing.modelID && model.modelID)
-          || (!existing.runtimeProviderID && model.runtimeProviderID)
-        ) {
+        if (!existing || model.input.length > existing.input.length || (!existing.runtimeProviderID && model.runtimeProviderID)) {
           merged.set(model.id, model);
         }
       }
@@ -183,10 +147,9 @@ export function getCachedModels(): string[] {
 }
 
 /**
- * Keep the full provider/model ID for Discord/catalog storage, but expose the
- * runtime provider and upstream model ID separately for the OpenCode request.
- * If the catalog entry is an alias from an unconnected provider, runtimeProviderID
- * points at a connected provider exposing the same upstream model.
+ * Keep the complete provider/model reference for Discord and storage, but
+ * provide OpenCode with a separate provider ID and the selected model suffix.
+ * The provider prefix never becomes part of modelID.
  */
 export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
   const clean = sanitizeModel(model);
@@ -199,7 +162,7 @@ export function resolveCatalogModel(model: string): { providerID: string; modelI
 
   return {
     providerID: selected?.runtimeProviderID ?? catalogProviderID,
-    modelID: selected?.modelID ?? modelID,
+    modelID,
   };
 }
 
