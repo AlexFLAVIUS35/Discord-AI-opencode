@@ -58,29 +58,20 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       all?:
         | Record<string, { models?: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> }>
         | Array<{ id?: string; models?: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> }>;
-      connected?: string[];
     };
 
-    const connected = new Set(
-      Array.isArray(payload.connected)
-        ? payload.connected.filter((id): id is string => typeof id === 'string' && id.length > 0)
-        : [],
-    );
-
-    if (!connected.size) return [];
-
+    // `all` is the complete OpenCode catalog. Do not restrict this to `connected`:
+    // Discord needs the provider/model ID to remain selectable and identifiable even
+    // when a provider is not currently connected. Runtime validation belongs to the
+    // OpenCode request itself.
     const models = new Map<string, ModelInfo>();
     if (Array.isArray(payload.all)) {
       for (const provider of payload.all) {
-        if (provider.id && connected.has(provider.id)) {
-          addProviderModels(models, provider.id, provider.models);
-        }
+        if (provider.id) addProviderModels(models, provider.id, provider.models);
       }
     } else {
       for (const [providerId, provider] of Object.entries(payload.all ?? {})) {
-        if (connected.has(providerId)) {
-          addProviderModels(models, providerId, provider.models);
-        }
+        addProviderModels(models, providerId, provider.models);
       }
     }
     return [...models.values()];
@@ -89,16 +80,6 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
   }
 }
 
-/**
- * Rebuild the model catalog directly from the OpenCode servers used by this bot.
- * The visible catalog keeps the real provider/model IDs so `/model set` can show
- * entries such as `302ai/gemini-2.5-flash`.
- *
- * OpenCode itself may expose a catalog alias whose upstream `modelID` is different.
- * We retain that metadata and translate it only when constructing the actual prompt
- * request. This means the Discord selector remains stable while OpenCode receives
- * the upstream model ID it expects.
- */
 export async function refreshModelCatalog(): Promise<ModelInfo[]> {
   if (refreshPromise) return refreshPromise;
 
@@ -132,9 +113,8 @@ export function getCachedModels(): string[] {
 }
 
 /**
- * Resolve the Discord catalog ID to the exact OpenCode provider/model payload.
- * For example, `302ai/gemini-2.5-flash` stays visible in Discord but becomes
- * `gemini-2.5-flash` when OpenCode's provider API declares that as `modelID`.
+ * Keep the full provider/model ID for Discord/catalog storage, but expose the
+ * provider ID and upstream model ID separately for the OpenCode request.
  */
 export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
   const clean = sanitizeModel(model);
@@ -219,9 +199,7 @@ export const model: Command = {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const models = await refreshModelCatalog();
       if (!models.length) {
-        await interaction.editReply(
-          '❌ OpenCode has no connected providers/models. Make sure the OpenCode server has provider credentials configured.',
-        );
+        await interaction.editReply('❌ OpenCode returned no models. Make sure the OpenCode server is running and its provider catalog is available.');
         return;
       }
 
@@ -237,18 +215,14 @@ export const model: Command = {
     const models = await refreshModelCatalog();
 
     if (!models.length) {
-      await interaction.editReply(
-        '❌ No connected models were returned by the OpenCode server. Check the OpenCode provider credentials/configuration.',
-      );
+      await interaction.editReply('❌ No models were returned by the OpenCode server. Check the OpenCode provider catalog/configuration.');
       return;
     }
 
     if (subcommand === 'list') {
       const chunks = formatCatalog(models);
       await interaction.editReply(chunks[0]);
-      for (const chunk of chunks.slice(1)) {
-        await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
-      }
+      for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -258,17 +232,13 @@ export const model: Command = {
       const label = input === 'image' ? '🖼️ Image-capable models' : '📝 Text-capable models';
 
       if (!matching.length) {
-        await interaction.editReply(`No connected models in OpenCode declare **${input}** input support.`);
+        await interaction.editReply(`No models in OpenCode declare **${input}** input support.`);
         return;
       }
 
-      const chunks = splitForDiscord(
-        [`### ${label}`, '', ...matching.map(model => `• \`${model.id}\``)].join('\n'),
-      );
+      const chunks = splitForDiscord([`### ${label}`, '', ...matching.map(model => `• \`${model.id}\``)].join('\n'));
       await interaction.editReply(chunks[0]);
-      for (const chunk of chunks.slice(1)) {
-        await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
-      }
+      for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -276,9 +246,7 @@ export const model: Command = {
     const selected = models.find(model => model.id === modelName);
 
     if (!selected) {
-      await interaction.editReply(
-        `❌ Model \`${modelName}\` is not an available connected OpenCode model. Use the exact \`provider/model\` ID shown by \`/model list\`.`,
-      );
+      await interaction.editReply(`❌ Model \`${modelName}\` is not in the OpenCode catalog. Use the exact \`provider/model\` ID shown by \`/model list\`.`);
       return;
     }
 
@@ -291,10 +259,7 @@ export const model: Command = {
     const focused = interaction.options.getFocused().toLowerCase();
     if (!catalog.length && !refreshPromise) await refreshModelCatalog();
 
-    const filtered = catalog
-      .filter(model => model.id.toLowerCase().includes(focused))
-      .slice(0, 25);
-
+    const filtered = catalog.filter(model => model.id.toLowerCase().includes(focused)).slice(0, 25);
     try {
       await interaction.respond(filtered.map(model => ({ name: model.id, value: model.id })));
     } catch {
