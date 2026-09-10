@@ -11,6 +11,8 @@ const DEFAULT_PORT_MAX = 14200;
 const WINDOWS_OPENCODE_COMMANDS = ["opencode.cmd", "opencode.exe", "opencode"];
 const POSIX_OPENCODE_COMMANDS = ["opencode"];
 const READY_POLL_INTERVAL_MS = 50;
+const googleApiKey = process.env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim();
+const apiKey302 = process.env["302AI_API_KEY"]?.trim();
 
 const instances = new Map<string, ServeInstance>();
 
@@ -385,12 +387,4 @@ export function getInstanceState(
     exitCode: instance.exitCode,
     exitError: instance.exitError,
   };
-}
-
-function getGoogleApiKeyConfigured(): boolean {
-  return Boolean(process.env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim());
-}
-
-function get302ApiKeyConfigured(): boolean {
-  return Boolean(process.env["302AI_API_KEY"]?.trim());
 }
