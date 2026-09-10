@@ -11,8 +11,6 @@ const DEFAULT_PORT_MAX = 14200;
 const WINDOWS_OPENCODE_COMMANDS = ["opencode.cmd", "opencode.exe", "opencode"];
 const POSIX_OPENCODE_COMMANDS = ["opencode"];
 const READY_POLL_INTERVAL_MS = 50;
-const googleApiKey = process.env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim();
-const apiKey302 = process.env["302AI_API_KEY"]?.trim();
 
 const instances = new Map<string, ServeInstance>();
 
@@ -91,129 +89,10 @@ function cleanupInstance(key: string): void {
   instances.delete(key);
 }
 
-function buildRuntimeConfig(baseConfig: string | undefined): string | undefined {
-  const googleApiKey = process.env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim();
-  const apiKey302 = process.env["302AI_API_KEY"]?.trim();
-  if (!googleApiKey && !apiKey302) return baseConfig;
-
-  let config: Record<string, unknown> = {};
-  if (baseConfig?.trim()) {
-    try {
-      const parsed: unknown = JSON.parse(baseConfig);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) config = parsed as Record<string, unknown>;
-    } catch {
-      console.warn("[opencode] Ignoring invalid OPENCODE_CONFIG_CONTENT while adding runtime providers");
-    }
-  }
-
-  const providerConfig = config.provider && typeof config.provider === "object" && !Array.isArray(config.provider)
-    ? { ...(config.provider as Record<string, unknown>) }
-    : {};
-
-  if (googleApiKey) {
-    const existingGoogle = providerConfig.google && typeof providerConfig.google === "object" && !Array.isArray(providerConfig.google)
-      ? { ...(providerConfig.google as Record<string, unknown>) }
-      : {};
-    const existingModels = existingGoogle.models && typeof existingGoogle.models === "object" && !Array.isArray(existingGoogle.models)
-      ? { ...(existingGoogle.models as Record<string, unknown>) }
-      : {};
-
-    providerConfig.google = {
-      ...existingGoogle,
-      npm: existingGoogle.npm ?? "@ai-sdk/google",
-      options: {
-        ...(existingGoogle.options && typeof existingGoogle.options === "object" && !Array.isArray(existingGoogle.options)
-          ? existingGoogle.options as Record<string, unknown>
-          : {}),
-        apiKey: googleApiKey,
-      },
-      models: {
-        ...existingModels,
-        "gemini-3.7-flash": {
-          ...(existingModels["gemini-3.7-flash"] && typeof existingModels["gemini-3.7-flash"] === "object" && !Array.isArray(existingModels["gemini-3.7-flash"])
-            ? existingModels["gemini-3.7-flash"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-3.6-flash": {
-          ...(existingModels["gemini-3.6-flash"] && typeof existingModels["gemini-3.6-flash"] === "object" && !Array.isArray(existingModels["gemini-3.6-flash"])
-            ? existingModels["gemini-3.6-flash"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-3.5-flash": {
-          ...(existingModels["gemini-3.5-flash"] && typeof existingModels["gemini-3.5-flash"] === "object" && !Array.isArray(existingModels["gemini-3.5-flash"])
-            ? existingModels["gemini-3.5-flash"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-3.5-flash-lite": {
-          ...(existingModels["gemini-3.5-flash-lite"] && typeof existingModels["gemini-3.5-flash-lite"] === "object" && !Array.isArray(existingModels["gemini-3.5-flash-lite"])
-            ? existingModels["gemini-3.5-flash-lite"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-3.1-flash-lite": {
-          ...(existingModels["gemini-3.1-flash-lite"] && typeof existingModels["gemini-3.1-flash-lite"] === "object" && !Array.isArray(existingModels["gemini-3.1-flash-lite"])
-            ? existingModels["gemini-3.1-flash-lite"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-2.5-flash": {
-          ...(existingModels["gemini-2.5-flash"] && typeof existingModels["gemini-2.5-flash"] === "object" && !Array.isArray(existingModels["gemini-2.5-flash"])
-            ? existingModels["gemini-2.5-flash"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-2.5-flash-lite": {
-          ...(existingModels["gemini-2.5-flash-lite"] && typeof existingModels["gemini-2.5-flash-lite"] === "object" && !Array.isArray(existingModels["gemini-2.5-flash-lite"])
-            ? existingModels["gemini-2.5-flash-lite"] as Record<string, unknown>
-            : {}),
-        },
-        "gemini-2.5-pro": {
-          ...(existingModels["gemini-2.5-pro"] && typeof existingModels["gemini-2.5-pro"] === "object" && !Array.isArray(existingModels["gemini-2.5-pro"])
-            ? existingModels["gemini-2.5-pro"] as Record<string, unknown>
-            : {}),
-        },
-      },
-    };
-  }
-
-  if (apiKey302) {
-    const existing302ai = providerConfig["302ai"] && typeof providerConfig["302ai"] === "object" && !Array.isArray(providerConfig["302ai"])
-      ? { ...(providerConfig["302ai"] as Record<string, unknown>) }
-      : {};
-
-    const existingModels = existing302ai.models && typeof existing302ai.models === "object" && !Array.isArray(existing302ai.models)
-      ? { ...(existing302ai.models as Record<string, unknown>) }
-      : {};
-
-    const baseURL = process.env["302AI_BASE_URL"]?.trim() || "https://api.302ai.com/v1";
-
-    providerConfig["302ai"] = {
-      ...existing302ai,
-      npm: existing302ai.npm ?? "@ai-sdk/openai-compatible",
-      options: {
-        ...(existing302ai.options && typeof existing302ai.options === "object" && !Array.isArray(existing302ai.options)
-          ? existing302ai.options as Record<string, unknown>
-          : {}),
-        baseURL,
-        apiKey: apiKey302,
-      },
-      models: {
-        ...existingModels,
-        "gemini-2.0-flash-lite": {
-          ...(existingModels["gemini-2.0-flash-lite"] && typeof existingModels["gemini-2.0-flash-lite"] === "object" && !Array.isArray(existingModels["gemini-2.0-flash-lite"])
-            ? existingModels["gemini-2.0-flash-lite"] as Record<string, unknown>
-            : {}),
-        },
-      },
-    };
-  }
-
-  config.provider = providerConfig;
-  return JSON.stringify(config);
-}
-
 // A project has one OpenCode server regardless of the selected model.
 // The model is a per-prompt setting, so it must never be part of the server
-// identity. Most importantly, the server inherits the user's normal OpenCode
-// configuration and provider credentials instead of receiving a replacement
-// OPENCODE_CONFIG file that can hide Gemini, 302ai, Xiaomi, or other providers.
+// identity. Most importantly, inherit OPENCODE_CONFIG_CONTENT exactly as
+// supplied so every configured provider/model remains available to /model set.
 function getInstanceKey(projectPath: string, storageEnabled = false): string {
   return `${projectPath}:${storageEnabled ? "storage" : "chat"}`;
 }
@@ -227,14 +106,12 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   const port = await findAvailablePort();
   const args = ["serve", "--port", port.toString()];
 
-  // Preserve the user's normal config, while optionally adding concrete
-  // runtime providers when Railway exposes their API keys. This is additive
-  // and avoids replacing the provider catalog used by the rest of OpenCode.
-  const runtimeConfig = buildRuntimeConfig(process.env.OPENCODE_CONFIG_CONTENT);
+  // Do not rewrite OPENCODE_CONFIG_CONTENT. OpenCode must receive the user's
+  // complete provider configuration unchanged so /provider can expose the
+  // complete catalog (Mimo, 302ai, Google, and every other configured provider).
   const env = {
     ...process.env,
     OPENCODE_ENABLE_EXA: "1",
-    ...(runtimeConfig ? { OPENCODE_CONFIG_CONTENT: runtimeConfig } : {}),
   };
   const command = resolveOpencodeCommand(env);
 
@@ -243,9 +120,9 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   console.log(`[opencode] Storage access: ${storageEnabled ? "ENABLED" : "DISABLED"}`);
   console.log(`[opencode] Agent: PLAN`);
   console.log(`[opencode] Web search: ENABLED (OpenCode websearch + webfetch)`);
-  console.log(`[opencode] Provider config: inherited from normal OpenCode environment`);
-  if (googleApiKey) console.log(`[opencode] Google Gemini runtime provider: ENABLED`);
-  if (apiKey302) console.log(`[opencode] 302.AI runtime provider: ENABLED`);
+  console.log(`[opencode] Provider config: inherited unchanged from normal OpenCode environment`);
+  if (env["GOOGLE_GENERATIVE_AI_API_KEY"]?.trim()) console.log(`[opencode] Google Gemini runtime provider: AVAILABLE`);
+  if (env["302AI_API_KEY"]?.trim()) console.log(`[opencode] 302.AI runtime provider: AVAILABLE`);
 
   let child: ChildProcess;
   try {
