@@ -66,6 +66,36 @@ export function saveConfig(config: AppConfig): void {
   writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
 }
 
+/**
+ * Returns every numbered bot token configured as BOT_<number>TOKEN.
+ *
+ * Example:
+ *   BOT_1TOKEN=...
+ *   BOT_2TOKEN=...
+ *   BOT_999TOKEN=...
+ *
+ * Any positive integer is accepted; gaps are fine. DISCORD_TOKEN remains
+ * supported as a backwards-compatible single-bot fallback.
+ */
+export function getBotTokens(): string[] {
+  loadEnvFile();
+
+  const numbered = Object.entries(process.env)
+    .map(([key, value]) => {
+      const match = key.match(/^BOT_(\d+)TOKEN$/);
+      return match && value?.trim() ? { key, index: Number(match[1]), token: value.trim() } : null;
+    })
+    .filter((entry): entry is { key: string; index: number; token: string } => entry !== null)
+    .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
+
+  if (numbered.length > 0) {
+    return numbered.map(entry => entry.token);
+  }
+
+  const legacyToken = process.env.DISCORD_TOKEN || loadConfig().bot?.discordToken;
+  return legacyToken?.trim() ? [legacyToken.trim()] : [];
+}
+
 export function getBotConfig(): BotConfig | undefined {
   const bot = loadConfig().bot;
   const discordToken = process.env.DISCORD_TOKEN || bot?.discordToken;
@@ -109,7 +139,7 @@ export function setPortConfig(ports: PortConfig): void {
 }
 
 export function hasBotConfig(): boolean {
-  return getBotConfig() !== undefined;
+  return getBotTokens().length > 0;
 }
 
 export function clearBotConfig(): void {
