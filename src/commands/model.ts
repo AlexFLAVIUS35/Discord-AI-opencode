@@ -120,20 +120,24 @@ async function refreshCatalog(force = false): Promise<ModelInfo[]> {
   if (refreshInFlight) return cachedModels;
   refreshInFlight = true;
   try {
+    // The running OpenCode server is the source of truth for models that can
+    // actually be resolved by the Discord bot's sessions. In particular, do
+    // not run `opencode models --refresh` against the bot process environment:
+    // that can rebuild the CLI catalog under the bot's temporary permission
+    // config and make `/model refresh` appear to delete configured providers.
     const serverModels = await loadModelsFromServers();
-    const cliModels = loadModelsFromCli(force);
-    const merged = new Map<string, ModelInfo>();
-    for (const model of cliModels) merged.set(model.id, model);
-    for (const model of serverModels) {
-      const existing = merged.get(model.id);
-      merged.set(model.id, {
-        id: model.id,
-        input: model.input.length ? model.input : (existing?.input ?? []),
-      });
+    if (serverModels.length) {
+      const models = serverModels.sort((a, b) => a.id.localeCompare(b.id));
+      cachedModels = models;
+      cacheTimestamp = Date.now();
+      return cachedModels;
     }
 
-    const models = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
-    if (models.length) {
+    // Only use the CLI catalog as a fallback when no running OpenCode server
+    // exposes a provider catalog (for example during startup).
+    const cliModels = loadModelsFromCli(false);
+    if (cliModels.length) {
+      const models = cliModels.sort((a, b) => a.id.localeCompare(b.id));
       cachedModels = models;
       cacheTimestamp = Date.now();
     }
