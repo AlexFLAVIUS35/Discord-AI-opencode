@@ -1,6 +1,6 @@
 import type { SSEClient } from "./sseClient.js";
 import * as dataStore from "./dataStore.js";
-import { sanitizeModel } from "../utils/stringUtils.js";
+import { resolveCatalogModel } from "../commands/model.js";
 import { getAuthHeaders, assertNotAuthError } from "./serverAuth.js";
 import sharp from "sharp";
 
@@ -18,7 +18,6 @@ export async function createSession(port: number): Promise<string> {
   if (!response.ok) { assertNotAuthError(response.status, "Failed to create session"); throw new Error(`Failed to create session: ${response.status} ${response.statusText}`); }
   const data = await response.json(); if (!data.id) throw new Error("Invalid session response: missing id"); return data.id;
 }
-function parseModelString(model: string): { providerID: string; modelID: string } | null { const clean = sanitizeModel(model); const slashIndex = clean.indexOf("/"); if (slashIndex === -1) return null; return { providerID: clean.slice(0, slashIndex), modelID: clean.slice(slashIndex + 1) }; }
 export interface PromptMediaAttachment { url: string; name: string; mime?: string | null; }
 
 function isSupportedImageMime(mime: string | null | undefined): boolean {
@@ -94,7 +93,7 @@ function isDiscordAttachmentUrl(value: string): boolean {
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();
-    return (hostname === 'cdn.discordapp.com' || hostname === 'media.discordapp.net') && /^\/attachments\//i.test(url.pathname);
+    return (hostname === 'cdn.discordapp.com' || hostname === 'media.discord.net') && /^\/attachments\//i.test(url.pathname);
   } catch { return false; }
 }
 
@@ -136,7 +135,7 @@ async function refreshDiscordAttachmentUrl(url: string): Promise<string | null> 
 function isDiscordGifUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.hostname.toLowerCase() === 'cdn.discordapp.com' || url.hostname.toLowerCase() === 'media.discordapp.net') && /\.gif$/i.test(url.pathname);
+    return (url.hostname.toLowerCase() === 'cdn.discordapp.com' || url.hostname.toLowerCase() === 'media.discord.net') && /\.gif$/i.test(url.pathname);
   } catch { return false; }
 }
 
@@ -312,18 +311,27 @@ async function mediaParts(attachments: PromptMediaAttachment[]): Promise<{ type:
   }
   return parts;
 }
+
 export async function sendPrompt(port: number, sessionId: string, text: string, model?: string, attachments: PromptMediaAttachment[] = []): Promise<void> {
   const parts: { type: string; text?: string; mime?: string; url?: string }[] = [{ type: "text", text }];
   if (attachments.length) parts.push(...await mediaParts(attachments));
   const body: { parts: typeof parts; model?: { providerID: string; modelID: string } } = { parts };
-  if (model) { const parsedModel = parseModelString(model); if (parsedModel) body.model = parsedModel; }
+
+  if (model) {
+    // `model` remains the full provider/model catalog ID in Discord and storage.
+    // Resolve it only at the OpenCode wire boundary so provider aliases never leak
+    // into the upstream modelID.
+    const resolved = resolveCatalogModel(model);
+    if (resolved) body.model = resolved;
+  }
+
   const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}/prompt_async`, { method: "POST", headers: jsonHeaders(), body: JSON.stringify(body) });
   if (!response.ok) { const responseBody = await response.text(); assertNotAuthError(response.status, "Failed to send prompt"); throw new Error(`Failed to send prompt: ${response.status} ${response.statusText} — ${responseBody}`); }
 }
 export async function validateSession(port: number, sessionId: string): Promise<boolean> { try { const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}`, { method: "GET", headers: jsonHeaders() }); if (!response.ok) assertNotAuthError(response.status, "Failed to validate session"); return response.ok; } catch { return false; } }
-export async function getSessionInfo(port: number, sessionId: string): Promise<SessionInfo | null> { try { const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}`, { headers: jsonHeaders() }); if (!response.ok) { assertNotAuthError(response.status, "Failed to get session info"); return null; } const data = await response.json(); return { id: data.id, title: data.title ?? "" }; } catch { return null; } }
+export async function getSessionInfo(port: number, sessionId: string): Promise<SessionInfo | null> { try { const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}`, { headers: getAuthHeaders() }); if (!response.ok) { assertNotAuthError(response.status, "Failed to get session info"); return null; } const data = await response.json(); return { id: data.id, title: data.title ?? "" }; } catch { return null; } }
 export interface SessionInfo { id: string; title: string; }
-export async function listSessions(port: number): Promise<SessionInfo[]> { try { const response = await fetch(`http://127.0.0.1:${port}/session`, { headers: jsonHeaders() }); if (!response.ok) { assertNotAuthError(response.status, "Failed to list sessions"); return []; } const data = await response.json(); return Array.isArray(data) ? data.map((s: { id: string; title?: string }) => ({ id: s.id, title: s.title ?? "" })) : []; } catch { return []; } }
+export async function listSessions(port: number): Promise<SessionInfo[]> { try { const response = await fetch(`http://127.0.0.1:${port}/session`, { headers: getAuthHeaders() }); if (!response.ok) { assertNotAuthError(response.status, "Failed to list sessions"); return []; } const data = await response.json(); return Array.isArray(data) ? data.map((s: { id: string; title?: string }) => ({ id: s.id, title: s.title ?? "" })) : []; } catch { return []; } }
 export async function abortSession(port: number, sessionId: string): Promise<boolean> { try { const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}/abort`, { method: "POST", headers: getAuthHeaders() }); if (!response.ok) assertNotAuthError(response.status, "Failed to abort session"); return response.ok; } catch { return false; } }
 export function getSessionForThread(threadId: string): { sessionId: string; projectPath: string; port: number } | undefined { const session = dataStore.getThreadSession(threadId); if (!session) return undefined; return { sessionId: session.sessionId, projectPath: session.projectPath, port: session.port }; }
 export function setSessionForThread(threadId: string, sessionId: string, projectPath: string, port: number): void { const existing = dataStore.getThreadSession(threadId); const now = Date.now(); dataStore.setThreadSession({ threadId, sessionId, projectPath, port, createdAt: existing?.createdAt ?? now, lastUsedAt: now }); }
