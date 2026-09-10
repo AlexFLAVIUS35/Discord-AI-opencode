@@ -14,6 +14,7 @@ import { getAuthHeaders } from '../services/serverAuth.js';
 type ModelInfo = {
   id: string;
   input: string[];
+  modelID?: string;
 };
 
 let catalog: ModelInfo[] = [];
@@ -33,14 +34,15 @@ function normalizeInput(value: unknown): string[] {
 function addProviderModels(
   target: Map<string, ModelInfo>,
   providerId: string,
-  models: Record<string, { capabilities?: { input?: unknown } }> | undefined,
+  models: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> | undefined,
 ): void {
   if (!providerId || !models) return;
 
   for (const [modelId, model] of Object.entries(models)) {
     const id = sanitizeModel(`${providerId}/${modelId}`);
     if (!id.includes('/')) continue;
-    target.set(id, { id, input: normalizeInput(model?.capabilities?.input) });
+    const modelID = typeof model?.modelID === 'string' && model.modelID.length > 0 ? model.modelID : undefined;
+    target.set(id, { id, input: normalizeInput(model?.capabilities?.input), modelID });
   }
 }
 
@@ -54,14 +56,11 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
 
     const payload = await response.json() as {
       all?:
-        | Record<string, { models?: Record<string, { capabilities?: { input?: unknown } }> }>
-        | Array<{ id?: string; models?: Record<string, { capabilities?: { input?: unknown } }> }>;
+        | Record<string, { models?: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> }>
+        | Array<{ id?: string; models?: Record<string, { capabilities?: { input?: unknown }; modelID?: unknown }> }>;
       connected?: string[];
     };
 
-    // OpenCode's `all` contains the Models.dev catalog, including providers that
-    // are not authenticated/configured for this server. Only `connected` is a
-    // valid source for models that the running server can actually use.
     const connected = new Set(
       Array.isArray(payload.connected)
         ? payload.connected.filter((id): id is string => typeof id === 'string' && id.length > 0)
@@ -92,10 +91,13 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
 
 /**
  * Rebuild the model catalog directly from the OpenCode servers used by this bot.
- * The running server is the only source of truth. `/provider.connected` is used
- * to prevent Models.dev-only entries from becoming selectable model IDs.
- * There is deliberately no CLI catalog, model-ID guessing, provider remapping,
- * stale-ID correction, or `opencode models --refresh` fallback.
+ * The visible catalog keeps the real provider/model IDs so `/model set` can show
+ * entries such as `302ai/gemini-2.5-flash`.
+ *
+ * OpenCode itself may expose a catalog alias whose upstream `modelID` is different.
+ * We retain that metadata and translate it only when constructing the actual prompt
+ * request. This means the Discord selector remains stable while OpenCode receives
+ * the upstream model ID it expects.
  */
 export async function refreshModelCatalog(): Promise<ModelInfo[]> {
   if (refreshPromise) return refreshPromise;
@@ -108,7 +110,9 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     for (const models of providers) {
       for (const model of models) {
         const existing = merged.get(model.id);
-        if (!existing || model.input.length > existing.input.length) merged.set(model.id, model);
+        if (!existing || model.input.length > existing.input.length || (!existing.modelID && model.modelID)) {
+          merged.set(model.id, model);
+        }
       }
     }
 
@@ -125,6 +129,26 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
 
 export function getCachedModels(): string[] {
   return catalog.map(model => model.id);
+}
+
+/**
+ * Resolve the Discord catalog ID to the exact OpenCode provider/model payload.
+ * For example, `302ai/gemini-2.5-flash` stays visible in Discord but becomes
+ * `gemini-2.5-flash` when OpenCode's provider API declares that as `modelID`.
+ */
+export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
+  const clean = sanitizeModel(model);
+  const separator = clean.indexOf('/');
+  if (separator === -1) return null;
+
+  const providerID = clean.slice(0, separator);
+  const modelID = clean.slice(separator + 1);
+  const selected = catalog.find(entry => entry.id === clean);
+
+  return {
+    providerID,
+    modelID: selected?.modelID ?? modelID,
+  };
 }
 
 function getEffectiveChannelId(interaction: ChatInputCommandInteraction): string {
