@@ -63,9 +63,8 @@ function addProviderModels(
 }
 
 function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
-  // The Google credential may be supplied through OpenCode's provider config
-  // rather than the Discord bot process environment. The catalog must still
-  // expose the native google/* IDs because runtime OpenCode resolves them.
+  // Native Google IDs are built into the Discord catalog so they survive
+  // OpenCode catalog refreshes even when /provider only reports aliases.
   const models: Array<[string, string[]]> = [
     ['google/gemini-3.7-flash', ['text']],
     ['google/gemini-3.6-flash', ['text']],
@@ -120,8 +119,6 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       addProviderModels(models, provider.id, provider.models, connectedProviders);
     }
 
-    // Keep native Google IDs separate from aliases such as anyapi/google/...
-    // so /model set can select the actual OpenCode google provider.
     addNativeGoogleModels(models);
 
     return [...models.values()];
@@ -138,6 +135,12 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     const providers = await Promise.all(instances.map(instance => readServerCatalog(instance.port)));
     const merged = new Map<string, ModelInfo>();
 
+    // Preserve the existing catalog during refresh. This prevents a temporary
+    // or incomplete OpenCode /provider response from deleting known models.
+    for (const model of catalog) {
+      merged.set(model.id, model);
+    }
+
     for (const models of providers) {
       for (const model of models) {
         const existing = merged.get(model.id);
@@ -147,7 +150,7 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
-    // A catalog refresh may run before any OpenCode instance exists.
+    // Built-in/native entries are authoritative and must always survive refresh.
     addNativeGoogleModels(merged);
 
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
