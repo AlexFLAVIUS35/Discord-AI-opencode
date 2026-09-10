@@ -12,6 +12,7 @@ import { commands } from '../commands/index.js';
 import { handleButton } from './buttonHandler.js';
 import { isAuthorized } from '../services/configStore.js';
 import * as dataStore from '../services/dataStore.js';
+import * as guildPersonality from '../services/guildPersonalityStore.js';
 import * as personalitySplit from '../services/personalitySplitStore.js';
 
 export async function handleInteraction(interaction: Interaction) {
@@ -53,9 +54,15 @@ async function handlePersonalitySplitButton(interaction: import('discord.js').Bu
     const input = new TextInputBuilder().setCustomId('personality_part').setLabel('Personality text').setPlaceholder('Type the next part of the personality...').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
     modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input)); await interaction.showModal(modal); return;
   }
-  const value = personalitySplit.finish(botId, scopeId, userId);
-  if (!value) { await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality set` again.', flags: MessageFlags.Ephemeral }); return; }
-  dataStore.setUserPersonality(botId, userId, value);
+  const result = personalitySplit.finish(botId, scopeId, userId);
+  if (!result) { await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality set` again.', flags: MessageFlags.Ephemeral }); return; }
+  if (result.scopeType === 'guild') {
+    if (!interaction.guildId || interaction.guildId !== scopeId) { await interaction.reply({ content: '❌ This personality setup belongs to another conversation.', flags: MessageFlags.Ephemeral }); return; }
+    guildPersonality.set(botId, scopeId, result.value);
+    await interaction.update({ content: '🧠 **Server-wide personality saved and enabled for this bot.** Everyone in this server will use it until `/personality all off`.', components: [] });
+    return;
+  }
+  dataStore.setUserPersonality(botId, userId, result.value);
   await interaction.update({ content: '🧠 **Your personal personality has been saved for this bot.**', components: [] });
 }
 
