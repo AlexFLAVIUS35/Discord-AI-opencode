@@ -3,14 +3,17 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { DataStore, ProjectConfig, ChannelBinding, ThreadSession, WorktreeMapping, PassthroughThread, QueuedMessage, QueueSettings, UserPersonality, MemoryEntry } from '../types/index.js';
 import { sanitizeModel } from '../utils/stringUtils.js';
-const CONFIG_DIR = join(homedir(), '.remote-opencode'); const DATA_FILE = join(CONFIG_DIR, 'data.json');
+const CONFIG_DIR = join(homedir(), '.remote-opencode'); const DATA_FILE = join(CONFIG_DIR, 'data.json'); const MODEL_SELECTIONS_FILE = join(CONFIG_DIR, 'model-selections.json');
 
 type PersistentModelCatalogEntry = { id: string; input: string[]; runtimeProviderID?: string };
 type PersistentDataStore = DataStore & { modelCatalog?: PersistentModelCatalogEntry[] };
+type ModelSelections = Record<string, string>;
 
 function ensureDataDir(){if(!existsSync(CONFIG_DIR))mkdirSync(CONFIG_DIR,{recursive:true});}
 function loadData():PersistentDataStore{ensureDataDir();if(!existsSync(DATA_FILE))return{projects:[],bindings:[]};try{return JSON.parse(readFileSync(DATA_FILE,'utf-8')) as PersistentDataStore}catch{return{projects:[],bindings:[]}}}
 function saveData(data:PersistentDataStore){ensureDataDir();writeFileSync(DATA_FILE,JSON.stringify(data,null,2),'utf-8');}
+function loadModelSelections():ModelSelections{ensureDataDir();if(!existsSync(MODEL_SELECTIONS_FILE))return{};try{const parsed=JSON.parse(readFileSync(MODEL_SELECTIONS_FILE,'utf-8'));if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))return{};return Object.fromEntries(Object.entries(parsed).filter(([,value])=>typeof value==='string').map(([channelId,value])=>[channelId,sanitizeModel(value)]));}catch{return{}}}
+function saveModelSelections(selections:ModelSelections){ensureDataDir();writeFileSync(MODEL_SELECTIONS_FILE,JSON.stringify(selections,null,2),'utf-8');}
 function personalityKey(botId:string,userId:string){return `${botId}:${userId}`;}
 export function setUserPersonality(botId:string,userId:string,personality:string){const d=loadData();if(!d.userPersonalities)d.userPersonalities=[];const key=personalityKey(botId,userId);const i=d.userPersonalities.findIndex(p=>p.userId===key);const v:UserPersonality={userId:key,personality,updatedAt:Date.now()};if(i>=0)d.userPersonalities[i]=v;else d.userPersonalities.push(v);saveData(d)}
 export function getUserPersonality(botId:string,userId:string){const d=loadData();const key=personalityKey(botId,userId);return d.userPersonalities?.find(p=>p.userId===key)?.personality}
@@ -19,8 +22,8 @@ export function addProject(alias:string,path:string){const d=loadData();const i=
 export function getProjects(){return loadData().projects} export function getProject(alias:string){return loadData().projects.find(p=>p.alias===alias)}
 export function removeProject(alias:string){const d=loadData();const i=d.projects.findIndex(p=>p.alias===alias);if(i<0)return false;d.projects.splice(i,1);d.bindings=d.bindings.filter(b=>b.projectAlias!==alias);saveData(d);return true}
 export function setChannelBinding(channelId:string,projectAlias:string,model?:string){const d=loadData();const i=d.bindings.findIndex(b=>b.channelId===channelId);if(i>=0){d.bindings[i].projectAlias=projectAlias;if(model!==undefined)d.bindings[i].model=model}else d.bindings.push({channelId,projectAlias,model});saveData(d)}
-export function setChannelModel(channelId:string,model:string){const d=loadData();const clean=sanitizeModel(model);if(!d.channelModels)d.channelModels={};d.channelModels[channelId]=clean;const i=d.bindings.findIndex(b=>b.channelId===channelId);if(i>=0)d.bindings[i].model=clean;saveData(d);return true}
-export function getChannelModel(channelId:string){const d=loadData();return sanitizeModel(d.channelModels?.[channelId]??d.bindings.find(b=>b.channelId===channelId)?.model??'')}
+export function setChannelModel(channelId:string,model:string){const selections=loadModelSelections();selections[channelId]=sanitizeModel(model);saveModelSelections(selections);return true}
+export function getChannelModel(channelId:string){const selections=loadModelSelections();const selected=selections[channelId];if(selected)return selected;const d=loadData();return sanitizeModel(d.channelModels?.[channelId]??d.bindings.find(b=>b.channelId===channelId)?.model??'')}
 export function setModelCatalog(models:PersistentModelCatalogEntry[]){const d=loadData();const normalized=new Map<string,PersistentModelCatalogEntry>();for(const model of models){const id=sanitizeModel(model.id);if(!id.includes('/'))continue;normalized.set(id,{id,input:Array.isArray(model.input)?model.input.filter((value):value is string=>typeof value==='string'):[],runtimeProviderID:model.runtimeProviderID});}d.modelCatalog=[...normalized.values()].sort((a,b)=>a.id.localeCompare(b.id));saveData(d)}
 export function getModelCatalog():PersistentModelCatalogEntry[]{return loadData().modelCatalog??[]}
 export function getChannelBinding(channelId:string){return loadData().bindings.find(b=>b.channelId===channelId)?.projectAlias} export function getChannelProjectPath(channelId:string){const a=getChannelBinding(channelId);return a?getProject(a)?.path:undefined}
