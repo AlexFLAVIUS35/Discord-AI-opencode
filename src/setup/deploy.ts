@@ -6,11 +6,15 @@ import pc from 'picocolors';
 
 const intents: never[] = [];
 
-export async function deployCommandsForClient(client: Client<true>): Promise<void> {
-  const applicationId = client.application?.id;
+export async function deployCommandsForClient(client: Client<boolean>): Promise<void> {
+  if (!client.isReady()) {
+    throw new Error('Discord client is not ready for command deployment.');
+  }
+
+  const applicationId = client.application.id;
   const token = client.token;
   if (!applicationId || !token) {
-    throw new Error('Discord client is not ready for command deployment.');
+    throw new Error('Discord client is missing application/token information.');
   }
 
   const commandsData = Array.from(commands.values()).map(c => c.data.toJSON());
