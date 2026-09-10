@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { Server } from "node:net";
 import { delimiter, join } from "node:path";
 import type { ServeInstance } from "../types/index.js";
@@ -41,12 +42,30 @@ async function findAvailablePort(): Promise<number> {
 }
 function cleanupInstance(key: string): void { instances.delete(key); }
 function getPermissionConfig(storageEnabled: boolean): string {
-  // Leeha uses OpenCode's Plan agent instead of Build. Web access stays enabled
-  // so every substantive request can be researched before Leeha answers it.
+  // Keep the permission sandbox, but load it from a real config file instead of
+  // OPENCODE_CONFIG_CONTENT. OpenCode's long-lived API server can expose models
+  // from the provider catalog while failing to resolve custom/provider models
+  // supplied through the inline config path. A file-based config is merged with
+  // the normal OpenCode config, so Gemini and every other configured provider stay available.
   const permission = storageEnabled
     ? { "*": "deny", read: "allow", edit: "allow", glob: "allow", grep: "allow", list: "allow", external_directory: "deny", bash: "deny", task: "deny", skill: "deny", lsp: "deny", question: "deny", webfetch: "allow", websearch: "allow" }
     : { "*": "deny", webfetch: "allow", websearch: "allow" };
   return JSON.stringify({ "$schema": "https://opencode.ai/config.json", default_agent: "plan", permission });
+}
+
+function createPermissionConfigFile(storageEnabled: boolean): string {
+  const directory = mkdtempSync(join(tmpdir(), "discord-ai-opencode-"));
+  const path = join(directory, "opencode.json");
+  writeFileSync(path, getPermissionConfig(storageEnabled), "utf8");
+  return path;
+}
+
+function removePermissionConfigFile(path: string | undefined): void {
+  if (!path) return;
+  try {
+    rmSync(path, { force: true });
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  } catch { /* best-effort cleanup */ }
 }
 
 // A project has one OpenCode server regardless of the selected model.
@@ -61,14 +80,22 @@ export async function spawnServe(projectPath: string, _model?: string, storageEn
   const key = getInstanceKey(projectPath, storageEnabled);
   const existing = instances.get(key); if (existing && !existing.exited) return existing.port; if (existing?.exited) cleanupInstance(key);
   const port = await findAvailablePort(); const args = ["serve", "--port", port.toString()];
-  const env = { ...process.env, OPENCODE_ENABLE_EXA: "1", OPENCODE_CONFIG_CONTENT: getPermissionConfig(storageEnabled) }; const command = resolveOpencodeCommand(env);
+  const permissionConfigPath = createPermissionConfigFile(storageEnabled);
+  const env = { ...process.env, OPENCODE_ENABLE_EXA: "1", OPENCODE_CONFIG: permissionConfigPath }; const command = resolveOpencodeCommand(env);
   console.log(`[opencode] Spawning: ${command} ${args.join(" ")}`); console.log(`[opencode] Working directory: ${projectPath}`); console.log(`[opencode] Storage access: ${storageEnabled ? "ENABLED" : "DISABLED"}`); console.log(`[opencode] Agent: PLAN`); console.log(`[opencode] Web search: ENABLED (OpenCode websearch + webfetch)`);
-  const child = spawn(command, args, { cwd: projectPath, env, stdio: ["inherit", "pipe", "pipe"] }); const instance: ServeInstance = { port, process: child, startTime: Date.now(), exited: false }; instances.set(key, instance);
+  let child: ChildProcess;
+  try {
+    child = spawn(command, args, { cwd: projectPath, env, stdio: ["inherit", "pipe", "pipe"] });
+  } catch (error) {
+    removePermissionConfigFile(permissionConfigPath);
+    throw error;
+  }
+  const instance: ServeInstance = { port, process: child, startTime: Date.now(), exited: false }; instances.set(key, instance);
   let stderrBuffer = ""; let stdoutBuffer = "";
   child.stdout?.on("data", (data) => { const text = data.toString(); stdoutBuffer = (stdoutBuffer + text).slice(-2000); console.log(`[opencode stdout] ${text.trim()}`); });
   child.stderr?.on("data", (data) => { const text = data.toString(); stderrBuffer = (stderrBuffer + text).slice(-2000); console.error(`[opencode stderr] ${text.trim()}`); });
-  child.on("exit", (code) => { const inst = instances.get(key); if (!inst) return; inst.exited = true; inst.exitCode = code; if (code !== 0 && code !== null) inst.exitError = stderrBuffer.trim() || stdoutBuffer.trim() || `Process exited with code ${code}`; });
-  child.on("error", (error) => { const inst = instances.get(key); if (!inst) return; inst.exited = true; inst.exitError = formatSpawnError(error, command, projectPath); });
+  child.on("exit", (code) => { const inst = instances.get(key); removePermissionConfigFile(permissionConfigPath); if (!inst) return; inst.exited = true; inst.exitCode = code; if (code !== 0 && code !== null) inst.exitError = stderrBuffer.trim() || stdoutBuffer.trim() || `Process exited with code ${code}`; });
+  child.on("error", (error) => { removePermissionConfigFile(permissionConfigPath); const inst = instances.get(key); if (!inst) return; inst.exited = true; inst.exitError = formatSpawnError(error, command, projectPath); });
   return port;
 }
 export function getPort(projectPath: string, _model?: string, storageEnabled = false): number | undefined { return instances.get(getInstanceKey(projectPath, storageEnabled))?.port; }
