@@ -223,7 +223,7 @@ function formatCatalog(models: ModelInfo[]): string[] {
   const lines = ['### 🤖 Available Models', ''];
   for (const [provider, providerModels] of groups) {
     lines.push(`**${provider}**`);
-    for (const model of providerModels) lines.push(`• \\`${model}\``);
+    for (const model of providerModels) lines.push(`• \`${model}\``);
     lines.push('');
   }
   return splitForDiscord(lines.join('\n'));
@@ -294,7 +294,7 @@ export const model: Command = {
         return;
       }
 
-      const chunks = splitForDiscord([`### ${label}`, '', ...matching.map(model => `• \\`${model.id}\``)].join('\n'));
+      const chunks = splitForDiscord([`### ${label}`, '', ...matching.map(model => `• \`${model.id}\``)].join('\n'));
       await interaction.editReply(chunks[0]);
       for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
       return;
@@ -304,13 +304,13 @@ export const model: Command = {
     const selected = models.find(model => model.id === modelName);
 
     if (!selected) {
-      await interaction.editReply(`❌ Model \\`${modelName}\` is not in the OpenCode catalog. Use the exact \\`provider/model\` ID shown by \\`/model list\`.`);
+      await interaction.editReply(`❌ Model \`${modelName}\` is not in the OpenCode catalog. Use the exact \`provider/model\` ID shown by \`/model list\`.`);
       return;
     }
 
     const channelId = getEffectiveChannelId(interaction);
     dataStore.setChannelModel(channelId, selected.id);
-    await interaction.editReply(`✅ Model for this channel set to \\`${selected.id}\`.`);
+    await interaction.editReply(`✅ Model for this channel set to \`${selected.id}\`.`);
   },
 
   async autocomplete(interaction: AutocompleteInteraction) {
