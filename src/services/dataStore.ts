@@ -4,9 +4,13 @@ import { homedir } from 'node:os';
 import type { DataStore, ProjectConfig, ChannelBinding, ThreadSession, WorktreeMapping, PassthroughThread, QueuedMessage, QueueSettings, UserPersonality, MemoryEntry } from '../types/index.js';
 import { sanitizeModel } from '../utils/stringUtils.js';
 const CONFIG_DIR = join(homedir(), '.remote-opencode'); const DATA_FILE = join(CONFIG_DIR, 'data.json');
+
+type PersistentModelCatalogEntry = { id: string; input: string[]; runtimeProviderID?: string };
+type PersistentDataStore = DataStore & { modelCatalog?: PersistentModelCatalogEntry[] };
+
 function ensureDataDir(){if(!existsSync(CONFIG_DIR))mkdirSync(CONFIG_DIR,{recursive:true});}
-function loadData():DataStore{ensureDataDir();if(!existsSync(DATA_FILE))return{projects:[],bindings:[]};try{return JSON.parse(readFileSync(DATA_FILE,'utf-8')) as DataStore}catch{return{projects:[],bindings:[]}}}
-function saveData(data:DataStore){ensureDataDir();writeFileSync(DATA_FILE,JSON.stringify(data,null,2),'utf-8');}
+function loadData():PersistentDataStore{ensureDataDir();if(!existsSync(DATA_FILE))return{projects:[],bindings:[]};try{return JSON.parse(readFileSync(DATA_FILE,'utf-8')) as PersistentDataStore}catch{return{projects:[],bindings:[]}}}
+function saveData(data:PersistentDataStore){ensureDataDir();writeFileSync(DATA_FILE,JSON.stringify(data,null,2),'utf-8');}
 function personalityKey(botId:string,userId:string){return `${botId}:${userId}`;}
 export function setUserPersonality(botId:string,userId:string,personality:string){const d=loadData();if(!d.userPersonalities)d.userPersonalities=[];const key=personalityKey(botId,userId);const i=d.userPersonalities.findIndex(p=>p.userId===key);const v:UserPersonality={userId:key,personality,updatedAt:Date.now()};if(i>=0)d.userPersonalities[i]=v;else d.userPersonalities.push(v);saveData(d)}
 export function getUserPersonality(botId:string,userId:string){const d=loadData();const key=personalityKey(botId,userId);return d.userPersonalities?.find(p=>p.userId===key)?.personality}
@@ -17,6 +21,8 @@ export function removeProject(alias:string){const d=loadData();const i=d.project
 export function setChannelBinding(channelId:string,projectAlias:string,model?:string){const d=loadData();const i=d.bindings.findIndex(b=>b.channelId===channelId);if(i>=0){d.bindings[i].projectAlias=projectAlias;if(model!==undefined)d.bindings[i].model=model}else d.bindings.push({channelId,projectAlias,model});saveData(d)}
 export function setChannelModel(channelId:string,model:string){const d=loadData();const clean=sanitizeModel(model);const i=d.bindings.findIndex(b=>b.channelId===channelId);if(i>=0)d.bindings[i].model=clean;else{if(!d.channelModels)d.channelModels={};d.channelModels[channelId]=clean}saveData(d);return true}
 export function getChannelModel(channelId:string){const d=loadData();return sanitizeModel(d.bindings.find(b=>b.channelId===channelId)?.model??d.channelModels?.[channelId]??'')}
+export function setModelCatalog(models:PersistentModelCatalogEntry[]){const d=loadData();const normalized=new Map<string,PersistentModelCatalogEntry>();for(const model of models){const id=sanitizeModel(model.id);if(!id.includes('/'))continue;normalized.set(id,{id,input:Array.isArray(model.input)?model.input.filter((value):value is string=>typeof value==='string'):[],runtimeProviderID:model.runtimeProviderID});}d.modelCatalog=[...normalized.values()].sort((a,b)=>a.id.localeCompare(b.id));saveData(d)}
+export function getModelCatalog():PersistentModelCatalogEntry[]{return loadData().modelCatalog??[]}
 export function getChannelBinding(channelId:string){return loadData().bindings.find(b=>b.channelId===channelId)?.projectAlias} export function getChannelProjectPath(channelId:string){const a=getChannelBinding(channelId);return a?getProject(a)?.path:undefined}
 export function getThreadSession(threadId:string){return loadData().threadSessions?.find(s=>s.threadId===threadId)} export function setThreadSession(session:ThreadSession){const d=loadData();if(!d.threadSessions)d.threadSessions=[];const i=d.threadSessions.findIndex(s=>s.threadId===session.threadId);if(i>=0)d.threadSessions[i]=session;else d.threadSessions.push(session);saveData(d)}
 export function updateThreadSessionLastUsed(threadId:string){const d=loadData();const s=d.threadSessions?.find(s=>s.threadId===threadId);if(s){s.lastUsedAt=Date.now();saveData(d)}} export function clearThreadSession(threadId:string){const d=loadData();if(d.threadSessions){d.threadSessions=d.threadSessions.filter(s=>s.threadId!==threadId);saveData(d)}} export function getAllThreadSessions(){return loadData().threadSessions??[]}
