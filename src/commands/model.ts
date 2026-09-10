@@ -167,17 +167,10 @@ export function getCachedModels(): string[] {
   return catalog.map(model => model.id);
 }
 
-/**
- * Runtime model routing is intentionally independent from catalog metadata.
- * The stored Discord selection is already an exact `provider/model` ID, so
- * split that exact ID at the first slash and never remap it to another
- * provider or another model ID based on stale catalog metadata.
- */
 export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
   const clean = sanitizeModel(model);
   const separator = clean.indexOf('/');
   if (separator <= 0 || separator === clean.length - 1) return null;
-
   return {
     providerID: clean.slice(0, separator),
     modelID: clean.slice(separator + 1),
@@ -222,6 +215,38 @@ function formatCatalog(models: ModelInfo[]): string[] {
     lines.push('');
   }
   return splitForDiscord(lines.join('\n'));
+}
+
+function autocompleteRank(modelId: string, focused: string): [number, number, string] {
+  const id = modelId.toLowerCase();
+  const query = focused.toLowerCase().trim();
+  if (!query) return [3, 0, id];
+  if (id === query) return [0, 0, id];
+  if (id.startsWith(`${query}/`)) return [1, 0, id];
+  if (id.startsWith(query)) return [1, 1, id];
+  const separator = id.indexOf('/');
+  const provider = separator === -1 ? id : id.slice(0, separator);
+  const model = separator === -1 ? id : id.slice(separator + 1);
+  if (provider === query) return [1, 2, id];
+  if (provider.startsWith(query)) return [1, 3, id];
+  if (model.startsWith(query)) return [2, 0, id];
+  if (id.includes(query)) return [2, 1, id];
+  return [3, 0, id];
+}
+
+function getAutocompleteModels(focused: string): ModelInfo[] {
+  const query = focused.toLowerCase().trim();
+  return catalog
+    .filter(model => {
+      if (!query) return true;
+      const id = model.id.toLowerCase();
+      return id.includes(query);
+    })
+    .sort((a, b) => {
+      const [ar, as, aid] = autocompleteRank(a.id, query);
+      const [br, bs, bid] = autocompleteRank(b.id, query);
+      return ar - br || as - bs || aid.localeCompare(bid);
+    });
 }
 
 export const model: Command = {
@@ -295,9 +320,6 @@ export const model: Command = {
       return;
     }
 
-    // /model set is deliberately strict: select one exact catalog ID and
-    // persist that same string. No aliases, fuzzy matching, suffix guessing,
-    // provider remapping, or model-ID substitution is allowed.
     const requested = sanitizeModel(interaction.options.getString('name', true));
     const selected = models.find(entry => entry.id === requested);
 
@@ -312,8 +334,6 @@ export const model: Command = {
     const exactModelId = selected.id;
     dataStore.setChannelModel(channelId, exactModelId);
 
-    // Read it back immediately. This turns a successful response into a
-    // persistence check instead of assuming the write succeeded.
     const persistedModelId = dataStore.getChannelModel(channelId);
     if (persistedModelId !== exactModelId) {
       await interaction.editReply(`❌ Failed to persist the selected model \`${exactModelId}\`. The channel model was not changed.`);
@@ -324,10 +344,10 @@ export const model: Command = {
   },
 
   async autocomplete(interaction: AutocompleteInteraction) {
-    const focused = interaction.options.getFocused().toLowerCase();
+    const focused = interaction.options.getFocused();
     if (!catalog.length && !refreshPromise) await refreshModelCatalog();
 
-    const filtered = catalog.filter(model => model.id.toLowerCase().includes(focused));
+    const filtered = getAutocompleteModels(focused);
     try {
       await interaction.respond(filtered.slice(0, 25).map(model => ({ name: model.id, value: model.id })));
     } catch {
