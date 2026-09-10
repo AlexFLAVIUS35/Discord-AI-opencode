@@ -56,16 +56,32 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       all?:
         | Record<string, { models?: Record<string, { capabilities?: { input?: unknown } }> }>
         | Array<{ id?: string; models?: Record<string, { capabilities?: { input?: unknown } }> }>;
+      connected?: string[];
     };
+
+    // OpenCode's `all` contains the Models.dev catalog, including providers that
+    // are not authenticated/configured for this server. Only `connected` is a
+    // valid source for models that the running server can actually use.
+    const connected = new Set(
+      Array.isArray(payload.connected)
+        ? payload.connected.filter((id): id is string => typeof id === 'string' && id.length > 0)
+        : [],
+    );
+
+    if (!connected.size) return [];
 
     const models = new Map<string, ModelInfo>();
     if (Array.isArray(payload.all)) {
       for (const provider of payload.all) {
-        if (provider.id) addProviderModels(models, provider.id, provider.models);
+        if (provider.id && connected.has(provider.id)) {
+          addProviderModels(models, provider.id, provider.models);
+        }
       }
     } else {
       for (const [providerId, provider] of Object.entries(payload.all ?? {})) {
-        addProviderModels(models, providerId, provider.models);
+        if (connected.has(providerId)) {
+          addProviderModels(models, providerId, provider.models);
+        }
       }
     }
     return [...models.values()];
@@ -76,7 +92,8 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
 
 /**
  * Rebuild the model catalog directly from the OpenCode servers used by this bot.
- * The server `/provider` response is the only source of truth.
+ * The running server is the only source of truth. `/provider.connected` is used
+ * to prevent Models.dev-only entries from becoming selectable model IDs.
  * There is deliberately no CLI catalog, model-ID guessing, provider remapping,
  * stale-ID correction, or `opencode models --refresh` fallback.
  */
@@ -179,7 +196,7 @@ export const model: Command = {
       const models = await refreshModelCatalog();
       if (!models.length) {
         await interaction.editReply(
-          '❌ OpenCode returned no models. Make sure an OpenCode server is running and its providers are configured.',
+          '❌ OpenCode has no connected providers/models. Make sure the OpenCode server has provider credentials configured.',
         );
         return;
       }
@@ -197,7 +214,7 @@ export const model: Command = {
 
     if (!models.length) {
       await interaction.editReply(
-        '❌ No models were returned by the OpenCode server. Check the OpenCode provider configuration.',
+        '❌ No connected models were returned by the OpenCode server. Check the OpenCode provider credentials/configuration.',
       );
       return;
     }
@@ -217,7 +234,7 @@ export const model: Command = {
       const label = input === 'image' ? '🖼️ Image-capable models' : '📝 Text-capable models';
 
       if (!matching.length) {
-        await interaction.editReply(`No models in OpenCode declare **${input}** input support.`);
+        await interaction.editReply(`No connected models in OpenCode declare **${input}** input support.`);
         return;
       }
 
@@ -236,7 +253,7 @@ export const model: Command = {
 
     if (!selected) {
       await interaction.editReply(
-        `❌ Model \`${modelName}\` is not in the current OpenCode catalog. Use the exact \`provider/model\` ID shown by \`/model list\`.`,
+        `❌ Model \`${modelName}\` is not an available connected OpenCode model. Use the exact \`provider/model\` ID shown by \`/model list\`.`,
       );
       return;
     }
