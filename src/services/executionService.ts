@@ -13,13 +13,20 @@ import { sanitizeModelOutput } from '../utils/responseSanitizer.js';
 async function reactToLatestUserMessage(channel: TextBasedChannel, emoji: string): Promise<void> { try { if (!("messages" in channel)) return; const messages = await (channel as any).messages.fetch({ limit: 20 }); const target = messages.find((message: Message) => !message.author.bot && !message.system); if (target) await target.react(emoji); } catch (error) { console.error(`Failed to add AI reaction ${emoji}:`, error instanceof Error ? error.message : error); } }
 async function processAiReactions(channel: TextBasedChannel, text: string): Promise<string> { const reactions: string[]=[]; const cleaned=text.replace(/\[react:([^\]\r\n]{1,64})\]/gu,(_m,emojiText:string)=>{const segmenter=new Intl.Segmenter(undefined,{granularity:'grapheme'});for(const part of segmenter.segment(emojiText.trim())){const emoji=part.segment.trim();if(emoji)reactions.push(emoji)}return ''});for(const emoji of reactions)await reactToLatestUserMessage(channel,emoji);return cleaned.replace(/[ \t]{2,}/g,' ').replace(/\n{3,}/g,'\n\n').trim();}
 export interface RunPromptMedia { url:string; name:string; mime?:string|null; }
+
+function getDefaultModel(): string | undefined {
+ const googleApiKey=process.env['GOOGLE_GENERATIVE_AI_API_KEY']?.trim();
+ return googleApiKey ? 'google/gemini-2.5-flash-lite' : undefined;
+}
+
 export async function runPrompt(channel:TextBasedChannel|null,threadId:string,prompt:string,parentChannelId:string,userId?:string,interaction?:ChatInputCommandInteraction,media:RunPromptMedia[]=[]):Promise<void>{
  const botId=interaction?.client.user?.id??channel?.client.user?.id??'unknown-bot';
  const guildId=interaction?.guildId??(('guildId' in (channel??{}))?((channel as any).guildId as string|undefined):undefined);
  const storageEnabled=storage.isEnabled(threadId);const projectPath=storage.getWorkspace(threadId);const configuredProjectPath=dataStore.getChannelProjectPath(parentChannelId);let worktreeMapping=storageEnabled?dataStore.getWorktreeMapping(threadId):undefined;
  if(storageEnabled&&!worktreeMapping){const projectAlias=dataStore.getChannelBinding(parentChannelId);if(projectAlias&&dataStore.getProjectAutoWorktree(projectAlias)&&configuredProjectPath){try{const branchName=worktreeManager.sanitizeBranchName(`auto/${threadId.slice(0,8)}-${Date.now()}`);const worktreePath=await worktreeManager.createWorktree(configuredProjectPath,branchName);const worktreePathForEmbed=worktreePath;const newMapping={threadId,branchName,worktreePath:worktreePathForEmbed,projectPath:configuredProjectPath,description:prompt.slice(0,50)+(prompt.length>50?'...':''),createdAt:Date.now()};dataStore.setWorktreeMapping(newMapping);worktreeMapping=newMapping;if(channel){const embed=new EmbedBuilder().setTitle(`🌳 Auto-Worktree: ${branchName}`).setDescription('Automatically created for this session').addFields({name:'Branch',value:branchName,inline:true},{name:'Path',value:worktreePathForEmbed,inline:true}).setColor(0x2ecc71);await(channel as any).send({embeds:[embed]});}}catch(error){console.error('Auto-worktree creation failed:',error)}}}
  const effectivePath=storageEnabled?(worktreeMapping?.worktreePath??projectPath):projectPath;
- const preferredModel=dataStore.getChannelModel(parentChannelId);
+ const configuredModel=dataStore.getChannelModel(parentChannelId);const preferredModel=configuredModel||getDefaultModel();
+ console.log(`[model] Channel ${parentChannelId}: ${configuredModel||'(none)'}${configuredModel?'':' -> '+(preferredModel??'(OpenCode default)')}`);
  try{if(channel)await(channel as any).sendTyping()}catch{}
  let port:number;let sessionId:string;let accumulatedText='';let promptSent=false;let hasSessionError=false;let responseHandled=false;let runningIndicator:Message|null=null;let runningIndicatorInterval:NodeJS.Timeout|null=null;let sseClient:SSEClient|null=null;
  const startRunningIndicator=async()=>{if(!channel)return;try{runningIndicator=await(channel as any).send('⠋');const spinner=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];let tick=0;runningIndicatorInterval=setInterval(()=>{if(runningIndicator)runningIndicator.edit({content:spinner[tick++%spinner.length]}).catch(()=>{})},700)}catch(error){console.error('Failed to start running indicator:',error)}};
