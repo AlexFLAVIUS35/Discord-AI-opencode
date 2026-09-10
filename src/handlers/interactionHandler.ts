@@ -7,13 +7,13 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  PermissionFlagsBits,
 } from 'discord.js';
 import { commands } from '../commands/index.js';
 import { handleButton } from './buttonHandler.js';
 import { isAuthorized } from '../services/configStore.js';
 import * as guildPersonality from '../services/guildPersonalityStore.js';
 import * as personalitySplit from '../services/personalitySplitStore.js';
-import * as dataStore from '../services/dataStore.js';
 
 export async function handleInteraction(interaction: Interaction) {
   if (interaction.isButton()) {
@@ -122,7 +122,7 @@ async function handlePersonalitySplitButton(interaction: import('discord.js').Bu
     return;
   }
 
-  if (!interaction.guildId || interaction.guildId !== guildId || !interaction.memberPermissions?.has('Administrator')) {
+  if (!interaction.guildId || interaction.guildId !== guildId || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
     await interaction.reply({ content: '❌ Only the administrator who started this setup can use it.', flags: MessageFlags.Ephemeral });
     return;
   }
@@ -158,7 +158,7 @@ async function handlePersonalitySplitButton(interaction: import('discord.js').Bu
 
   guildPersonality.set(guildId, value);
   await interaction.update({
-    content: `🧠 **Server-wide personality enabled.**\n\n${value}`,
+    content: '🧠 **Server-wide personality enabled.** Your complete personality has been saved.',
     components: [],
   });
 }
@@ -171,7 +171,7 @@ async function handlePersonalitySplitModal(interaction: import('discord.js').Mod
     return;
   }
 
-  if (!interaction.memberPermissions?.has('Administrator')) {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
     await interaction.reply({ content: '❌ Only the administrator who started this setup can use it.', flags: MessageFlags.Ephemeral });
     return;
   }
