@@ -17,6 +17,17 @@ type ModelInfo = {
   runtimeProviderID?: string;
 };
 
+const NATIVE_GOOGLE_MODELS: ReadonlyArray<ModelInfo> = [
+  { id: 'google/gemini-3.7-flash', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-3.6-flash', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-3.5-flash', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-3.5-flash-lite', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-3.1-flash-lite', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-2.5-flash', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-2.5-flash-lite', input: ['text'], runtimeProviderID: 'google' },
+  { id: 'google/gemini-2.5-pro', input: ['text'], runtimeProviderID: 'google' },
+];
+
 let catalog: ModelInfo[] = dataStore.getModelCatalog();
 let refreshPromise: Promise<ModelInfo[]> | undefined;
 
@@ -63,19 +74,8 @@ function addProviderModels(
 }
 
 function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
-  const models: Array<[string, string[]]> = [
-    ['google/gemini-3.7-flash', ['text']],
-    ['google/gemini-3.6-flash', ['text']],
-    ['google/gemini-3.5-flash', ['text']],
-    ['google/gemini-3.5-flash-lite', ['text']],
-    ['google/gemini-3.1-flash-lite', ['text']],
-    ['google/gemini-2.5-flash', ['text']],
-    ['google/gemini-2.5-flash-lite', ['text']],
-    ['google/gemini-2.5-pro', ['text']],
-  ];
-
-  for (const [id, input] of models) {
-    target.set(id, { id, input, runtimeProviderID: 'google' });
+  for (const model of NATIVE_GOOGLE_MODELS) {
+    target.set(model.id, { ...model, input: [...model.input] });
   }
 }
 
@@ -149,6 +149,7 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
+    // Native Google entries are authoritative and must survive every refresh.
     addNativeGoogleModels(merged);
 
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -236,11 +237,16 @@ function autocompleteRank(modelId: string, focused: string): [number, number, st
 
 function getAutocompleteModels(focused: string): ModelInfo[] {
   const query = focused.toLowerCase().trim();
-  return catalog
+  const autocompleteCatalog = new Map<string, ModelInfo>();
+
+  // The native catalog is always present for autocomplete, independently of refresh state.
+  for (const model of catalog) autocompleteCatalog.set(model.id, model);
+  for (const model of NATIVE_GOOGLE_MODELS) autocompleteCatalog.set(model.id, model);
+
+  return [...autocompleteCatalog.values()]
     .filter(model => {
       if (!query) return true;
-      const id = model.id.toLowerCase();
-      return id.includes(query);
+      return model.id.toLowerCase().includes(query);
     })
     .sort((a, b) => {
       const [ar, as, aid] = autocompleteRank(a.id, query);
