@@ -52,11 +52,6 @@ function addProviderModels(
     const id = sanitizeModel(`${providerId}/${modelId}`);
     if (!id.includes('/')) continue;
 
-    // The catalog key is the stable OpenCode model reference shown to the user.
-    // For these exposed provider aliases, the suffix is the actual model name
-    // that should cross the request boundary. Do not trust a mismatched modelID
-    // from catalog metadata: stale provider metadata can map one visible model
-    // to an entirely different upstream model.
     const runtimeProviderID = connectedProviders.has(providerId) ? providerId : undefined;
 
     target.set(id, {
@@ -64,6 +59,20 @@ function addProviderModels(
       input: normalizeInput(model?.capabilities?.input),
       runtimeProviderID,
     });
+  }
+}
+
+function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
+  if (!process.env['GOOGLE_GENERATIVE_AI_API_KEY']?.trim()) return;
+
+  const models: Array<[string, string[]]> = [
+    ['google/gemini-2.5-flash', ['text']],
+    ['google/gemini-2.5-flash-lite', ['text']],
+    ['google/gemini-2.5-pro', ['text']],
+  ];
+
+  for (const [id, input] of models) {
+    target.set(id, { id, input, runtimeProviderID: 'google' });
   }
 }
 
@@ -105,9 +114,12 @@ async function readServerCatalog(port: number): Promise<ModelInfo[]> {
       addProviderModels(models, provider.id, provider.models, connectedProviders);
     }
 
-    // If the catalog provider is not connected, keep the catalog entry visible.
-    // Runtime provider selection stays conservative: only use a provider when
-    // OpenCode explicitly reports that provider as connected.
+    // OpenCode's built-in catalog can expose Google models through provider
+    // aliases such as anyapi/google/... while the native Google provider is
+    // configured separately via GOOGLE_GENERATIVE_AI_API_KEY. Always expose
+    // the native IDs explicitly when that credential is present.
+    addNativeGoogleModels(models);
+
     return [...models.values()];
   } catch {
     return [];
@@ -131,6 +143,10 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
+    // A catalog refresh may run before any OpenCode instance exists, so add
+    // native Google models directly from the Railway environment as well.
+    addNativeGoogleModels(merged);
+
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
     return catalog;
   })();
@@ -146,11 +162,6 @@ export function getCachedModels(): string[] {
   return catalog.map(model => model.id);
 }
 
-/**
- * Keep the complete provider/model reference for Discord and storage, but
- * provide OpenCode with a separate provider ID and the selected model suffix.
- * The provider prefix never becomes part of modelID.
- */
 export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
   const clean = sanitizeModel(model);
   const separator = clean.indexOf('/');
