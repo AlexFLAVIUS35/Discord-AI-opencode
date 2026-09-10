@@ -7,12 +7,11 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  PermissionFlagsBits,
 } from 'discord.js';
 import { commands } from '../commands/index.js';
 import { handleButton } from './buttonHandler.js';
 import { isAuthorized } from '../services/configStore.js';
-import * as guildPersonality from '../services/guildPersonalityStore.js';
+import * as dataStore from '../services/dataStore.js';
 import * as personalitySplit from '../services/personalitySplitStore.js';
 
 export async function handleInteraction(interaction: Interaction) {
@@ -125,26 +124,26 @@ export async function handleInteraction(interaction: Interaction) {
 }
 
 async function handlePersonalitySplitButton(interaction: import('discord.js').ButtonInteraction) {
-  const [, action, guildId, userId] = interaction.customId.match(/^personality_split_(next|done):([^:]+):([^:]+)$/) ?? [];
+  const [, action, scopeId, userId] = interaction.customId.match(/^personality_split_(next|done):([^:]+):([^:]+)$/) ?? [];
 
-  if (!action || !guildId || !userId || userId !== interaction.user.id) {
+  if (!action || !scopeId || !userId || userId !== interaction.user.id) {
     await interaction.reply({ content: '❌ This personality setup belongs to someone else.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  if (!interaction.guildId || interaction.guildId !== guildId || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    await interaction.reply({ content: '❌ Only the administrator who started this setup can use it.', flags: MessageFlags.Ephemeral });
+  if (interaction.guildId && scopeId !== interaction.guildId) {
+    await interaction.reply({ content: '❌ This personality setup belongs to another conversation.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  if (personalitySplit.getPartCount(guildId, userId) === 0 && action === 'done') {
+  if (personalitySplit.getPartCount(scopeId, userId) === 0 && action === 'done') {
     await interaction.reply({ content: '❌ Add at least one personality part first.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   if (action === 'next') {
     const modal = new ModalBuilder()
-      .setCustomId(`personality_split_modal:${guildId}:${userId}`)
+      .setCustomId(`personality_split_modal:${scopeId}:${userId}`)
       .setTitle('Add Personality Part');
 
     const input = new TextInputBuilder()
@@ -160,54 +159,51 @@ async function handlePersonalitySplitButton(interaction: import('discord.js').Bu
     return;
   }
 
-  const value = personalitySplit.finish(guildId, userId);
+  const value = personalitySplit.finish(scopeId, userId);
   if (!value) {
-    await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality all set split:true` again.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality set split:true` again.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  guildPersonality.set(guildId, value);
+  dataStore.setUserPersonality(userId, value);
   await interaction.update({
-    content: '🧠 **Server-wide personality enabled.** Your complete personality has been saved.',
+    content: '🧠 **Your personal personality has been saved.** It will be used for your future chats across the bot.',
     components: [],
   });
 }
 
 async function handlePersonalitySplitModal(interaction: import('discord.js').ModalSubmitInteraction) {
-  const [, guildId, userId] = interaction.customId.match(/^personality_split_modal:([^:]+):([^:]+)$/) ?? [];
+  const [, scopeId, userId] = interaction.customId.match(/^personality_split_modal:([^:]+):([^:]+)$/) ?? [];
 
-  if (!guildId || !userId || userId !== interaction.user.id || interaction.guildId !== guildId) {
+  if (!scopeId || !userId || userId !== interaction.user.id) {
     await interaction.reply({ content: '❌ This personality setup belongs to someone else.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    await interaction.reply({ content: '❌ Only the administrator who started this setup can use it.', flags: MessageFlags.Ephemeral });
+  if (interaction.guildId && scopeId !== interaction.guildId) {
+    await interaction.reply({ content: '❌ This personality setup belongs to another conversation.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const part = interaction.fields.getTextInputValue('personality_part');
-  const count = personalitySplit.addPart(guildId, userId, part);
+  const count = personalitySplit.addPart(scopeId, userId, part);
 
   if (count === undefined) {
-    await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality all set split:true` again.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: '❌ This personality setup has expired. Run `/personality set split:true` again.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const nextButton = new ButtonBuilder()
-    .setCustomId(`personality_split_next:${guildId}:${userId}`)
+    .setCustomId(`personality_split_next:${scopeId}:${userId}`)
     .setLabel('Next Part')
     .setStyle(ButtonStyle.Secondary);
   const doneButton = new ButtonBuilder()
-    .setCustomId(`personality_split_done:${guildId}:${userId}`)
+    .setCustomId(`personality_split_done:${scopeId}:${userId}`)
     .setLabel('Done')
     .setStyle(ButtonStyle.Success);
   const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(nextButton, doneButton)];
-  const content = `🧠 **Split personality setup**\n\nPress **Next Part** to enter another personality part. Press **Done** when finished.\n\nParts: **${count}**`;
+  const content = `🧠 **Personal personality setup**\n\nPress **Next Part** to enter another personality part. Press **Done** when finished.\n\nParts: **${count}**`;
 
-  // A modal opened by a button is a message-originated modal. Update that
-  // original message instead of trying to edit the modal interaction's
-  // message object. This keeps the Next Part / Done buttons alive.
   if (interaction.isFromMessage()) {
     await interaction.update({ content, components });
     return;
