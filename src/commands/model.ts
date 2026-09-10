@@ -63,9 +63,6 @@ function addProviderModels(
 }
 
 function addNativeGoogleModels(target: Map<string, ModelInfo>): void {
-  // Keep the native Google catalog authoritative and independent of whether
-  // the API key happens to be visible during a catalog refresh. The runtime
-  // provider still requires GOOGLE_GENERATIVE_AI_API_KEY to actually use them.
   const models: Array<[string, string[]]> = [
     ['google/gemini-3.7-flash', ['text']],
     ['google/gemini-3.6-flash', ['text']],
@@ -136,8 +133,6 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
     const providers = await Promise.all(instances.map(instance => readServerCatalog(instance.port)));
     const merged = new Map<string, ModelInfo>();
 
-    // Never delete previously known models during refresh. Start from durable
-    // storage, then the in-memory copy, then merge any fresh OpenCode entries.
     for (const model of dataStore.getModelCatalog()) {
       merged.set(model.id, model);
     }
@@ -154,7 +149,6 @@ export async function refreshModelCatalog(): Promise<ModelInfo[]> {
       }
     }
 
-    // Native Google models are always retained, regardless of /provider output.
     addNativeGoogleModels(merged);
 
     catalog = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -173,18 +167,20 @@ export function getCachedModels(): string[] {
   return catalog.map(model => model.id);
 }
 
+/**
+ * Runtime model routing is intentionally independent from catalog metadata.
+ * The stored Discord selection is already an exact `provider/model` ID, so
+ * split that exact ID at the first slash and never remap it to another
+ * provider or another model ID based on stale catalog metadata.
+ */
 export function resolveCatalogModel(model: string): { providerID: string; modelID: string } | null {
   const clean = sanitizeModel(model);
   const separator = clean.indexOf('/');
-  if (separator === -1) return null;
-
-  const catalogProviderID = clean.slice(0, separator);
-  const modelID = clean.slice(separator + 1);
-  const selected = catalog.find(entry => entry.id === clean);
+  if (separator <= 0 || separator === clean.length - 1) return null;
 
   return {
-    providerID: selected?.runtimeProviderID ?? catalogProviderID,
-    modelID,
+    providerID: clean.slice(0, separator),
+    modelID: clean.slice(separator + 1),
   };
 }
 
@@ -299,17 +295,32 @@ export const model: Command = {
       return;
     }
 
-    const modelName = sanitizeModel(interaction.options.getString('name', true).trim());
-    const selected = models.find(model => model.id === modelName);
+    // /model set is deliberately strict: select one exact catalog ID and
+    // persist that same string. No aliases, fuzzy matching, suffix guessing,
+    // provider remapping, or model-ID substitution is allowed.
+    const requested = sanitizeModel(interaction.options.getString('name', true));
+    const selected = models.find(entry => entry.id === requested);
 
     if (!selected) {
-      await interaction.editReply(`❌ Model \`${modelName}\` is not in the OpenCode catalog. Use the exact \`provider/model\` ID shown by \`/model list\`.`);
+      await interaction.editReply(
+        `❌ Model \`${requested}\` is not in the current OpenCode catalog. Use the exact \`provider/model\` ID shown by \`/model list\`.`,
+      );
       return;
     }
 
     const channelId = getEffectiveChannelId(interaction);
-    dataStore.setChannelModel(channelId, selected.id);
-    await interaction.editReply(`✅ Model for this channel set to \`${selected.id}\`.`);
+    const exactModelId = selected.id;
+    dataStore.setChannelModel(channelId, exactModelId);
+
+    // Read it back immediately. This turns a successful response into a
+    // persistence check instead of assuming the write succeeded.
+    const persistedModelId = dataStore.getChannelModel(channelId);
+    if (persistedModelId !== exactModelId) {
+      await interaction.editReply(`❌ Failed to persist the selected model \`${exactModelId}\`. The channel model was not changed.`);
+      return;
+    }
+
+    await interaction.editReply(`✅ Model for this channel set to \`${exactModelId}\`.`);
   },
 
   async autocomplete(interaction: AutocompleteInteraction) {
