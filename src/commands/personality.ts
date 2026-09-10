@@ -3,9 +3,15 @@ import type { Command } from './index.js';
 import * as dataStore from '../services/dataStore.js';
 import * as guildPersonality from '../services/guildPersonalityStore.js';
 import * as personalitySplit from '../services/personalitySplitStore.js';
+import { isSuperAdmin } from '../services/configStore.js';
 
 const MAX_PERSONALITY_LENGTH = 2000;
-function isGuildAdmin(interaction: ChatInputCommandInteraction): boolean { return Boolean(interaction.guildId && interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)); }
+function isGuildAdmin(interaction: ChatInputCommandInteraction): boolean {
+  return Boolean(
+    interaction.guildId &&
+    (isSuperAdmin(interaction.user.id) || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)),
+  );
+}
 
 export const personality: Command = {
   data: new SlashCommandBuilder()
