@@ -3,6 +3,7 @@ import type { Command } from './index.js';
 import * as dataStore from '../services/dataStore.js';
 import * as guildPersonality from '../services/guildPersonalityStore.js';
 import * as personalitySplit from '../services/personalitySplitStore.js';
+import * as personalityAgent from '../services/personalityAgentService.js';
 import { isSuperAdmin } from '../services/configStore.js';
 
 const MAX_PERSONALITY_LENGTH = 2000;
@@ -53,15 +54,17 @@ export const personality: Command = {
         const value = interaction.options.getString('personality')?.trim();
         if (!value) { await interaction.reply({ content: '❌ Personality text is required unless `split` is enabled.', flags: MessageFlags.Ephemeral }); return; }
         guildPersonality.set(botId, guildId, value);
+        await personalityAgent.syncEffectiveAgent(botId, undefined, guildId);
         await interaction.reply({ content: '🧠 **Server-wide personality enabled.** Everyone in this server will use it, and personal personalities are ignored until `/personality all off`.', flags: MessageFlags.Ephemeral });
         return;
       }
       if (subcommand === 'on') {
         if (!guildPersonality.enable(botId, guildId)) { await interaction.reply({ content: '❌ No server-wide personality is saved. Use `/personality all set` first.', flags: MessageFlags.Ephemeral }); return; }
+        await personalityAgent.syncEffectiveAgent(botId, undefined, guildId);
         await interaction.reply({ content: '🟢 **Server-wide personality enabled.** Personal personalities are ignored for everyone here.', flags: MessageFlags.Ephemeral }); return;
       }
-      if (subcommand === 'off') { guildPersonality.disable(botId, guildId); await interaction.reply({ content: '🔴 **Server-wide personality disabled.** Users may use their own `/personality set` again.', flags: MessageFlags.Ephemeral }); return; }
-      guildPersonality.reset(botId, guildId); await interaction.reply({ content: '🧹 **Server-wide personality reset.** It has been removed and disabled.', flags: MessageFlags.Ephemeral }); return;
+      if (subcommand === 'off') { guildPersonality.disable(botId, guildId); await personalityAgent.removeAgent(botId, 'guild', guildId); await interaction.reply({ content: '🔴 **Server-wide personality disabled.** Users may use their own `/personality set` again.', flags: MessageFlags.Ephemeral }); return; }
+      guildPersonality.reset(botId, guildId); await personalityAgent.removeAgent(botId, 'guild', guildId); await interaction.reply({ content: '🧹 **Server-wide personality reset.** It has been removed and disabled.', flags: MessageFlags.Ephemeral }); return;
     }
 
     const userId = interaction.user.id;
@@ -69,6 +72,7 @@ export const personality: Command = {
       if (guildId && guildPersonality.isEnabled(botId, guildId)) { await interaction.reply({ content: '🔒 **Server-wide personality is enabled.** You cannot change your personal personality in this server until an administrator runs `/personality all off`.', flags: MessageFlags.Ephemeral }); return; }
       const value = interaction.options.getString('personality', true).trim();
       dataStore.setUserPersonality(botId, userId, value);
+      await personalityAgent.syncEffectiveAgent(botId, userId);
       await interaction.reply({ content: '🧠 **Personality saved permanently for this bot.**', flags: MessageFlags.Ephemeral }); return;
     }
     if (subcommand === 'view') {
@@ -77,6 +81,7 @@ export const personality: Command = {
       await interaction.reply({ content: value ? `🧠 **Your personality for this bot:**\n${value}` : '🧠 You have no custom personality saved for this bot.', flags: MessageFlags.Ephemeral }); return;
     }
     const removed = dataStore.removeUserPersonality(botId, userId);
+    await personalityAgent.removeAgent(botId, 'user', userId);
     await interaction.reply({ content: removed ? '🧠 **Your saved personality was reset for this bot.**' : '🧠 You did not have a saved personality for this bot.', flags: MessageFlags.Ephemeral });
   },
 };
