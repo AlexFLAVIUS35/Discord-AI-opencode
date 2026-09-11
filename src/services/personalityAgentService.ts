@@ -1,28 +1,41 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
 import * as dataStore from './dataStore.js';
 import * as guildPersonality from './guildPersonalityStore.js';
+
+type Scope = 'user' | 'guild';
 
 function safePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-function agentId(botId: string, scope: 'user' | 'guild', scopeId: string): string {
+function agentId(botId: string, scope: Scope, scopeId: string): string {
   return `discord/${safePart(botId)}/${scope}-${safePart(scopeId)}`;
 }
 
-function agentPath(botId: string, scope: 'user' | 'guild', scopeId: string): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '.';
-  return `${home}/.config/opencode/agents/${agentId(botId, scope, scopeId)}.md`;
+function agentPath(botId: string, scope: Scope, scopeId: string): string {
+  return path.join(os.homedir(), '.config', 'opencode', 'agents', ...agentId(botId, scope, scopeId).split('/')) + '.md';
 }
 
 function escapeFrontmatter(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
 }
 
-async function writeAgent(botId: string, scope: 'user' | 'guild', scopeId: string, personality: string): Promise<string> {
-  const fs = await import('node:fs/promises');
-  const path = agentPath(botId, scope, scopeId);
-  await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
-  await fs.writeFile(path, `---\ndescription: "${escapeFrontmatter(`${scope} Discord personality`)}"\nmode: all\nhidden: true\n---\n\n${personality.trim()}\n`, 'utf8');
+async function writeAgent(botId: string, scope: Scope, scopeId: string, personality: string): Promise<string> {
+  const filePath = agentPath(botId, scope, scopeId);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const content = [
+    '---',
+    `description: "${escapeFrontmatter(`${scope} Discord personality`)}"`,
+    'mode: all',
+    'hidden: true',
+    '---',
+    '',
+    personality.trim(),
+    '',
+  ].join('\n');
+  await fs.writeFile(filePath, content, 'utf8');
   return agentId(botId, scope, scopeId);
 }
 
@@ -38,7 +51,10 @@ export async function syncEffectiveAgent(botId: string, userId?: string, guildId
   return undefined;
 }
 
-export async function removeAgent(botId: string, scope: 'user' | 'guild', scopeId: string): Promise<void> {
-  const fs = await import('node:fs/promises');
-  try { await fs.unlink(agentPath(botId, scope, scopeId)); } catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+export async function removeAgent(botId: string, scope: Scope, scopeId: string): Promise<void> {
+  try {
+    await fs.unlink(agentPath(botId, scope, scopeId));
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
 }
