@@ -314,7 +314,7 @@ async function mediaParts(attachments: PromptMediaAttachment[]): Promise<{ type:
   return parts;
 }
 
-export async function sendPrompt(port: number, sessionId: string, prompt: string, model?: string, media: PromptMediaAttachment[] = []): Promise<void> {
+export async function sendPrompt(port: number, sessionId: string, prompt: string, model?: string, media: PromptMediaAttachment[] = [], agent?: string): Promise<void> {
   const parts: Array<{ type: string; text?: string; mime?: string; url?: string }> = [];
   const imageParts = await mediaParts(media);
   for (const part of imageParts) parts.push(part);
@@ -324,6 +324,7 @@ export async function sendPrompt(port: number, sessionId: string, prompt: string
     const resolved = resolveCatalogModel(model);
     if (resolved) body.model = resolved;
   }
+  if (agent) body.agent = agent;
   const response = await fetch(`http://127.0.0.1:${port}/session/${encodeURIComponent(sessionId)}/prompt_async`, {
     method: "POST",
     headers: jsonHeaders(),
@@ -407,8 +408,5 @@ export async function ensureSessionForThread(threadId: string, projectPath: stri
   return sessionId;
 }
 
-export function updateSessionLastUsed(threadId: string): void { dataStore.updateThreadSessionLastUsed(threadId); }
-export function clearSessionForThread(threadId: string): void { dataStore.clearThreadSession(threadId); }
 export function setSseClient(threadId: string, client: SSEClient): void { threadSseClients.set(threadId, client); }
-export function getSseClient(threadId: string): SSEClient | undefined { return threadSseClients.get(threadId); }
 export function clearSseClient(threadId: string): void { threadSseClients.delete(threadId); }
