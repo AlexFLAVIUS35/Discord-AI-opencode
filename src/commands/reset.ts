@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, MessageFlags } from 'discord.js';
 import * as dataStore from '../services/dataStore.js';
 import * as sessionManager from '../services/sessionManager.js';
+import { getAuthHeaders, assertNotAuthError } from '../services/serverAuth.js';
 import type { Command } from './index.js';
 
 export const reset: Command = {
@@ -25,10 +26,20 @@ export const reset: Command = {
       // session so its old messages cannot be loaded or reused later.
       await sessionManager.abortSession(currentSession.port, currentSession.sessionId).catch(() => false);
 
-      const response = await fetch(
-        `http://127.0.0.1:${currentSession.port}/session/${encodeURIComponent(currentSession.sessionId)}`,
-        { method: 'DELETE', headers: { Authorization: process.env.OPENCODE_SERVER_PASSWORD ? `Bearer ${process.env.OPENCODE_SERVER_PASSWORD}` : '' } },
-      ).catch(() => null);
+      let response: Response | null = null;
+      try {
+        response = await fetch(
+          `http://127.0.0.1:${currentSession.port}/session/${encodeURIComponent(currentSession.sessionId)}`,
+          { method: 'DELETE', headers: getAuthHeaders() },
+        );
+        if (!response.ok) assertNotAuthError(response.status, 'Failed to delete session');
+      } catch (error) {
+        if (error instanceof Error && (error.message.includes('credentials') || error.message.includes('requires authentication'))) {
+          await interaction.editReply(`❌ ${error.message}`);
+          return;
+        }
+        response = null;
+      }
 
       if (!response?.ok) {
         await interaction.editReply('❌ Could not delete the old AI conversation. Your memory was not reset.');
