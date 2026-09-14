@@ -30,6 +30,13 @@ export function clearConversationMemory(conversationId: string): void {
   if (remaining.length !== existing.length) dataStore.setMemories(remaining);
 }
 
+/** Remove all persisted memory belonging to a Discord user across every conversation/thread. */
+export function clearUserMemory(userId: string): void {
+  const existing = getAll();
+  const remaining = existing.filter(m => m.userId !== userId);
+  if (remaining.length !== existing.length) dataStore.setMemories(remaining);
+}
+
 export function buildMemoryContext(conversationId: string, userId: string, query: string, limit = 12): string {
   const all = getAll().filter(m => m.conversationId === conversationId || m.userId === userId);
   if (!all.length) return '';
