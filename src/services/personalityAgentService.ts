@@ -10,12 +10,14 @@ function safePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+// OpenCode agent names are single names, not slash-separated paths. Keep the
+// Discord/bot/scope identity in the filename while exposing a valid agent ID.
 function agentId(botId: string, scope: Scope, scopeId: string): string {
-  return `discord/${safePart(botId)}/${scope}-${safePart(scopeId)}`;
+  return `discord-${safePart(botId)}-${scope}-${safePart(scopeId)}`;
 }
 
 function agentPath(botId: string, scope: Scope, scopeId: string): string {
-  return path.join(os.homedir(), '.config', 'opencode', 'agents', ...agentId(botId, scope, scopeId).split('/')) + '.md';
+  return path.join(os.homedir(), '.config', 'opencode', 'agents', `${agentId(botId, scope, scopeId)}.md`);
 }
 
 function escapeFrontmatter(value: string): string {
