@@ -8,12 +8,13 @@ import type { Command } from './index.js';
 export const reset: Command = {
   data: new SlashCommandBuilder()
     .setName('reset')
-    .setDescription('Reset the AI memory for this channel or thread') as SlashCommandBuilder,
+    .setDescription('Forget all AI conversation history for you') as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const conversationId = interaction.channelId;
+    const userId = interaction.user.id;
     const currentSession = sessionManager.getSessionForThread(conversationId);
 
     if (currentSession) {
@@ -48,14 +49,14 @@ export const reset: Command = {
       }
     }
 
-    // Remove both the OpenCode session mapping and the bot's persisted memory
-    // for this Discord conversation. The next message therefore starts with
-    // neither the old session nor retrieved old conversation messages.
+    // Reset means a complete user-level memory wipe, not merely clearing the
+    // current Discord thread. This removes persisted memories from every
+    // conversation/thread belonging to this Discord user.
     sessionManager.clearSessionForThread(conversationId);
-    memory.clearConversationMemory(conversationId);
+    memory.clearUserMemory(userId);
     dataStore.clearQueue(conversationId);
     dataStore.updateQueueSettings(conversationId, { freshContext: false });
 
-    await interaction.editReply('✅ memory reset — the next message starts a completely new conversation.');
+    await interaction.editReply('✅ memory reset — all of your saved conversation history was forgotten.');
   },
 };
