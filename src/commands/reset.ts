@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, MessageFlags } from 'discord.js';
 import * as dataStore from '../services/dataStore.js';
 import * as sessionManager from '../services/sessionManager.js';
+import * as memory from '../services/memoryService.js';
 import { getAuthHeaders, assertNotAuthError } from '../services/serverAuth.js';
 import type { Command } from './index.js';
 
@@ -47,10 +48,13 @@ export const reset: Command = {
       }
     }
 
-    // Removing the mapping guarantees the next message creates a brand-new session.
+    // Remove both the OpenCode session mapping and the bot's persisted memory
+    // for this Discord conversation. The next message therefore starts with
+    // neither the old session nor retrieved old conversation messages.
     sessionManager.clearSessionForThread(conversationId);
+    memory.clearConversationMemory(conversationId);
     dataStore.clearQueue(conversationId);
-    dataStore.updateQueueSettings(conversationId, { freshContext: true });
+    dataStore.updateQueueSettings(conversationId, { freshContext: false });
 
     await interaction.editReply('✅ memory reset — the next message starts a completely new conversation.');
   },
