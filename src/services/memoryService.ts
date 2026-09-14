@@ -11,8 +11,6 @@ function tokens(text: string): Set<string> {
 export function remember(conversationId: string, userId: string, role: MemoryEntry['role'], text: string): void {
   const clean = text.replace(/\s+/g, ' ').trim();
   if (!clean) return;
-  const data = (dataStore as any).__loadRaw?.();
-  // Use the public datastore extension when available; otherwise memory persistence is handled below.
   addMemory(conversationId, userId, role, clean.slice(0, MAX_MEMORY_TEXT));
 }
 
@@ -24,6 +22,13 @@ function addMemory(conversationId: string, userId: string, role: MemoryEntry['ro
 }
 
 function getAll(): MemoryEntry[] { return dataStore.getMemories(); }
+
+/** Remove all persisted memory belonging to a Discord conversation/thread. */
+export function clearConversationMemory(conversationId: string): void {
+  const existing = getAll();
+  const remaining = existing.filter(m => m.conversationId !== conversationId);
+  if (remaining.length !== existing.length) dataStore.setMemories(remaining);
+}
 
 export function buildMemoryContext(conversationId: string, userId: string, query: string, limit = 12): string {
   const all = getAll().filter(m => m.conversationId === conversationId || m.userId === userId);
