@@ -30,7 +30,7 @@ function isPrivateHostname(hostname: string): boolean {
   const parts = host.split('.').map(Number);
   if (parts.length === 4 && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 255)) {
     const [a, b] = parts;
-    return a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a === 0;
+    return a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && a === 192 && b === 168) || a === 0;
   }
   return false;
 }
@@ -374,6 +374,14 @@ export async function abortSession(port: number, sessionId: string): Promise<boo
   try {
     const response = await fetch(`http://127.0.0.1:${port}/session/${sessionId}/abort`, { method: "POST", headers: getAuthHeaders() });
     if (!response.ok) assertNotAuthError(response.status, "Failed to abort session");
+    return response.ok;
+  } catch { return false; }
+}
+
+export async function deleteSession(port: number, sessionId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/session/${encodeURIComponent(sessionId)}`, { method: "DELETE", headers: getAuthHeaders() });
+    if (!response.ok) assertNotAuthError(response.status, "Failed to delete session");
     return response.ok;
   } catch { return false; }
 }
