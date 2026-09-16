@@ -1,4 +1,3 @@
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import * as dataStore from './dataStore.js';
@@ -16,16 +15,16 @@ function agentId(botId: string, scope: Scope, scopeId: string): string {
   return `discord-${safePart(botId)}-${scope}-${safePart(scopeId)}`;
 }
 
-function agentPath(botId: string, scope: Scope, scopeId: string): string {
-  return path.join(os.homedir(), '.config', 'opencode', 'agents', `${agentId(botId, scope, scopeId)}.md`);
+function agentPath(workspacePath: string, botId: string, scope: Scope, scopeId: string): string {
+  return path.join(workspacePath, '.opencode', 'agents', `${agentId(botId, scope, scopeId)}.md`);
 }
 
 function escapeFrontmatter(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
 }
 
-async function writeAgent(botId: string, scope: Scope, scopeId: string, personality: string): Promise<string> {
-  const filePath = agentPath(botId, scope, scopeId);
+async function writeAgent(workspacePath: string, botId: string, scope: Scope, scopeId: string, personality: string): Promise<string> {
+  const filePath = agentPath(workspacePath, botId, scope, scopeId);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const content = [
     '---',
@@ -41,21 +40,21 @@ async function writeAgent(botId: string, scope: Scope, scopeId: string, personal
   return agentId(botId, scope, scopeId);
 }
 
-export async function syncEffectiveAgent(botId: string, userId?: string, guildId?: string): Promise<string | undefined> {
+export async function syncEffectiveAgent(workspacePath: string, botId: string, userId?: string, guildId?: string): Promise<string | undefined> {
   if (guildId) {
     const serverPersonality = guildPersonality.getPersonality(botId, guildId);
-    if (serverPersonality) return writeAgent(botId, 'guild', guildId, serverPersonality);
+    if (serverPersonality) return writeAgent(workspacePath, botId, 'guild', guildId, serverPersonality);
   }
   if (userId) {
     const personalPersonality = dataStore.getUserPersonality(botId, userId);
-    if (personalPersonality) return writeAgent(botId, 'user', userId, personalPersonality);
+    if (personalPersonality) return writeAgent(workspacePath, botId, 'user', userId, personalPersonality);
   }
   return undefined;
 }
 
-export async function removeAgent(botId: string, scope: Scope, scopeId: string): Promise<void> {
+export async function removeAgent(workspacePath: string, botId: string, scope: Scope, scopeId: string): Promise<void> {
   try {
-    await fs.unlink(agentPath(botId, scope, scopeId));
+    await fs.unlink(agentPath(workspacePath, botId, scope, scopeId));
   } catch (error: any) {
     if (error?.code !== 'ENOENT') throw error;
   }
