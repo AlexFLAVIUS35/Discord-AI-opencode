@@ -37,13 +37,17 @@ export function clearUserMemory(userId: string): void {
   if (remaining.length !== existing.length) dataStore.setMemories(remaining);
 }
 
-export function buildMemoryContext(conversationId: string, userId: string, query: string, limit = 12): string {
-  const all = getAll().filter(m => m.conversationId === conversationId || m.userId === userId);
+export function buildMemoryContext(conversationId: string, _userId: string, query: string, limit = 12): string {
+  // Memory is deliberately scoped to the exact bot/channel conversation.
+  // Do not fall back to userId here: the same Discord user can talk to
+  // multiple bots, and their memories must never become another bot's
+  // identity or conversation context.
+  const all = getAll().filter(m => m.conversationId === conversationId);
   if (!all.length) return '';
   const q = tokens(query);
   const ranked = all.map(m => {
     const mt = tokens(m.text);
-    let score = m.conversationId === conversationId ? 3 : 0;
+    let score = 3;
     for (const word of q) if (mt.has(word)) score += 2;
     score += Math.min(1, (Date.now() - m.createdAt) < 86400000 ? 1 : 0);
     return { m, score };
