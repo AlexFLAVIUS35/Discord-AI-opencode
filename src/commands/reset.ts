@@ -12,36 +12,36 @@ export const reset: Command = {
   async execute(interaction: ChatInputCommandInteraction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    const conversationId = interaction.channelId;
+    const channelId = interaction.channelId;
+    const botId = interaction.client.user?.id ?? 'unknown-bot';
+    const conversationId = `${botId}:${channelId}`;
     const userId = interaction.user.id;
-    const currentSession = sessionManager.getSessionForThread(conversationId);
 
-    if (currentSession) {
-      const sseClient = sessionManager.getSseClient(conversationId);
+    // Sessions are bot-scoped now. Also check the old channel-only key once so
+    // a session created by a pre-isolation deployment cannot leak into the new
+    // context after a reset.
+    const currentSession = sessionManager.getSessionForThread(conversationId);
+    const legacySession = sessionManager.getSessionForThread(channelId);
+    const sessionsToDelete = new Map<string, { sessionId: string; projectPath: string; port: number }>();
+    if (currentSession) sessionsToDelete.set(`${currentSession.port}:${currentSession.sessionId}`, currentSession);
+    if (legacySession) sessionsToDelete.set(`${legacySession.port}:${legacySession.sessionId}`, legacySession);
+
+    for (const session of sessionsToDelete.values()) {
+      const key = session === currentSession ? conversationId : channelId;
+      const sseClient = sessionManager.getSseClient(key);
       if (sseClient) {
         sseClient.disconnect();
-        sessionManager.clearSseClient(conversationId);
+        sessionManager.clearSseClient(key);
       }
-      await sessionManager.abortSession(currentSession.port, currentSession.sessionId).catch(() => false);
+      await sessionManager.abortSession(session.port, session.sessionId).catch(() => false);
     }
 
-    // A reset must not leave any OpenCode session capable of supplying the
-    // pre-reset conversation. Delete every session on the OpenCode server,
-    // not only the session currently mapped to this Discord channel.
-    const ports = new Set<number>();
-    if (currentSession) ports.add(currentSession.port);
-    for (const session of dataStore.getAllThreadSessions()) ports.add(session.port);
-
     try {
-      for (const port of ports) {
-        const sessions = await sessionManager.listSessions(port);
-        for (const session of sessions) {
-          await sessionManager.abortSession(port, session.id).catch(() => false);
-          const deleted = await sessionManager.deleteSession(port, session.id);
-          if (!deleted) {
-            await interaction.editReply('❌ Could not delete the old AI conversation. Your memory was not reset.');
-            return;
-          }
+      for (const session of sessionsToDelete.values()) {
+        const deleted = await sessionManager.deleteSession(session.port, session.sessionId);
+        if (!deleted) {
+          await interaction.editReply('❌ Could not delete the old AI conversation. Your memory was not reset.');
+          return;
         }
       }
     } catch (error) {
@@ -53,11 +53,13 @@ export const reset: Command = {
       return;
     }
 
-    // Clear all persisted memory for this Discord user and remove every
-    // Discord-thread session mapping so the next message starts from zero.
-    for (const session of dataStore.getAllThreadSessions()) {
-      sessionManager.clearSessionForThread(session.threadId);
-    }
+    // Remove the bot-scoped session mappings. Do not delete other bots'
+    // sessions: multiple Discord bots may share the same OpenCode server.
+    sessionManager.clearSessionForThread(conversationId);
+    sessionManager.clearSessionForThread(channelId);
+
+    // /reset is a user-level memory reset, so saved memories from all of this
+    // user's conversations are removed rather than only the current channel.
     memory.clearUserMemory(userId);
     dataStore.clearQueue(conversationId);
     dataStore.updateQueueSettings(conversationId, { freshContext: false });
