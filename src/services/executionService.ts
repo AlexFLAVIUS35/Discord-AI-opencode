@@ -21,9 +21,6 @@ function getDefaultModel(): string | undefined {
 
 export async function runPrompt(channel:TextBasedChannel|null,threadId:string,prompt:string,parentChannelId:string,userId?:string,interaction?:ChatInputCommandInteraction,media:RunPromptMedia[]=[]):Promise<void>{
  const botId=interaction?.client.user?.id??channel?.client.user?.id??'unknown-bot';
- // A Discord channel can contain multiple bots. Never let them share an
- // OpenCode session, memory context, worktree, or queue just because they
- // received the same Discord channel ID.
  const contextId=`${botId}:${threadId}`;
  const guildId=interaction?.guildId??(('guildId' in (channel??{}))?((channel as any).guildId as string|undefined):undefined);
  const storageEnabled=storage.isEnabled(contextId);const projectPath=storage.getWorkspace(contextId);const configuredProjectPath=dataStore.getChannelProjectPath(parentChannelId);let worktreeMapping=storageEnabled?dataStore.getWorktreeMapping(contextId):undefined;
@@ -38,10 +35,9 @@ export async function runPrompt(channel:TextBasedChannel|null,threadId:string,pr
  const sendOutput=async(content:string):Promise<boolean>=>{try{await stopRunningIndicator();if(interaction){if(!interaction.replied&&!interaction.deferred)await interaction.reply({content});else await interaction.followUp({content});return true}if(!channel)return false;await(channel as any).send({content});return true}catch(error){console.error('Failed to send AI response:',error);return false}};
  const cleanup=async()=>{if(sseClient){sseClient.disconnect();sseClient=null}sessionManager.clearSseClient(contextId);await stopRunningIndicator()};
  try{
-  // OpenCode discovers Markdown agents when its server starts. Sync the effective
-  // personality before spawning the server so the selected agent is available
-  // to the session instead of being created after discovery has already run.
-  const agent=await personalityAgent.syncEffectiveAgent(botId,userId,guildId);
+  // OpenCode discovers project Markdown agents from the active workspace. Sync
+  // the selected personality into that workspace before spawning the server.
+  const agent=await personalityAgent.syncEffectiveAgent(botId,userId,guildId,effectivePath);
   console.log(`[personality] Bot ${botId}: ${agent??'(default OpenCode agent)'}`);
   await new Promise<void>(r=>setTimeout(r,2000));await startRunningIndicator();port=await serveManager.spawnServe(effectivePath,preferredModel,storageEnabled);await serveManager.waitForReady(port,30000,effectivePath,preferredModel,storageEnabled);const settings=dataStore.getQueueSettings(contextId);if(settings.freshContext){sessionManager.clearSessionForThread(contextId);dataStore.updateQueueSettings(contextId,{freshContext:false});}sessionId=await sessionManager.ensureSessionForThread(contextId,effectivePath,port);
   sseClient=new SSEClient();const sseReady=new Promise<void>((resolve,reject)=>{let settled=false;const timeout=setTimeout(()=>{if(!settled){settled=true;reject(new Error('Timed out waiting for OpenCode SSE connection'))}},10000);sseClient!.onConnected(()=>{if(!settled){settled=true;clearTimeout(timeout);resolve()}});sseClient!.onError(error=>{if(!settled){settled=true;clearTimeout(timeout);reject(error)}})});sessionManager.setSseClient(contextId,sseClient);
