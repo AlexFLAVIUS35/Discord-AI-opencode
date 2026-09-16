@@ -17,21 +17,32 @@ export const reset: Command = {
     const conversationId = `${botId}:${channelId}`;
     const userId = interaction.user.id;
 
-    // Sessions are bot-scoped now. Also check the old channel-only key once so
-    // a session created by a pre-isolation deployment cannot leak into the new
-    // context after a reset.
-    const currentSession = sessionManager.getSessionForThread(conversationId);
+    // Delete every tracked OpenCode session belonging to this bot. Sessions
+    // are keyed as botId:channelId, so another Discord bot's conversations
+    // are never touched by this reset.
+    const trackedSessions = dataStore.getAllThreadSessions().filter(session =>
+      session.threadId === conversationId || session.threadId.startsWith(`${botId}:`),
+    );
+
+    // Also check the old channel-only key once for sessions created before
+    // bot-scoped session IDs were introduced.
     const legacySession = sessionManager.getSessionForThread(channelId);
-    const sessionsToDelete = new Map<string, { sessionId: string; projectPath: string; port: number }>();
-    if (currentSession) sessionsToDelete.set(`${currentSession.port}:${currentSession.sessionId}`, currentSession);
-    if (legacySession) sessionsToDelete.set(`${legacySession.port}:${legacySession.sessionId}`, legacySession);
+    const sessionsToDelete = new Map<string, { threadId: string; sessionId: string; projectPath: string; port: number }>();
+    for (const session of trackedSessions) {
+      sessionsToDelete.set(`${session.port}:${session.sessionId}`, session);
+    }
+    if (legacySession) {
+      sessionsToDelete.set(`${legacySession.port}:${legacySession.sessionId}`, {
+        threadId: channelId,
+        ...legacySession,
+      });
+    }
 
     for (const session of sessionsToDelete.values()) {
-      const key = session === currentSession ? conversationId : channelId;
-      const sseClient = sessionManager.getSseClient(key);
+      const sseClient = sessionManager.getSseClient(session.threadId);
       if (sseClient) {
         sseClient.disconnect();
-        sessionManager.clearSseClient(key);
+        sessionManager.clearSseClient(session.threadId);
       }
       await sessionManager.abortSession(session.port, session.sessionId).catch(() => false);
     }
@@ -53,13 +64,12 @@ export const reset: Command = {
       return;
     }
 
-    // Remove the bot-scoped session mappings. Do not delete other bots'
-    // sessions: multiple Discord bots may share the same OpenCode server.
-    sessionManager.clearSessionForThread(conversationId);
+    // Remove all tracked session mappings for this bot, plus the legacy key.
+    for (const session of trackedSessions) sessionManager.clearSessionForThread(session.threadId);
     sessionManager.clearSessionForThread(channelId);
 
-    // /reset is a user-level memory reset, so saved memories from all of this
-    // user's conversations are removed rather than only the current channel.
+    // Remove persisted memory for the user. Memory retrieval itself is
+    // conversation-scoped, so this cannot cause another bot to inherit it.
     memory.clearUserMemory(userId);
     dataStore.clearQueue(conversationId);
     dataStore.updateQueueSettings(conversationId, { freshContext: false });
